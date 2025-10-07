@@ -1,7 +1,5 @@
 // db.js
 
-// 1. Import the 'dotenv' library to manage environment variables
-require('dotenv').config();
 
 // 2. Import the Pool class from the 'pg' library
 // A connection pool is more efficient than creating a new connection for every query.

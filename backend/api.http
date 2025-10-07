@@ -1,0 +1,116 @@
+### Register a New User and Company
+POST http://localhost:4000/register
+Content-Type: application/json
+
+{
+  "companyName": "Kenya Bottlers Ltd",
+  "userName": "Jane Doe",
+  "email": "jane.doe@kenyabottlers.com",
+  "password": "securepassword123"
+}
+
+###
+### Login with existing user credentials
+# @name login 
+POST http://localhost:4000/login
+Content-Type: application/json
+
+{
+  "email": "jane.doe@kenyabottlers.com",
+  "password": "securepassword123"
+}
+
+###
+### Add a new machine (requires authentication)
+# @name createMachine
+POST http://localhost:4000/machines
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.token}}
+
+{
+  "name": "Filling Machine C-4",
+  "location": "Bottling Hall 2"
+}
+
+###
+### Get all machines for the logged-in user's company
+GET http://localhost:4000/machines
+Authorization: Bearer {{login.response.body.token}}
+
+###
+### Report a machine breakdown
+POST http://localhost:4000/breakdowns
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.token}}
+
+{
+  "machineId": 1,
+  "description": "The main conveyor belt is jammed and making a loud grinding noise."
+}
+
+###
+### Get all active breakdowns for the company
+GET http://localhost:4000/breakdowns
+Authorization: Bearer {{login.response.body.token}}
+
+###
+### Update the status of a specific breakdown
+# Change the '1' in the URL to a valid breakdown ID from the GET request above
+PATCH http://localhost:4000/breakdowns/3/status
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.token}}
+
+{
+  "status": "Acknowledged"
+}
+
+###
+### (UTILITIES) Define a new utility for the company
+POST http://localhost:4000/utilities
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.token}}
+
+{
+  "name": "Mains Power Meter",
+  "unit": "kWh"
+}
+
+###
+### (UTILITIES) Get all utilities for the company
+GET http://localhost:4000/utilities
+Authorization: Bearer {{login.response.body.token}}
+
+###
+### (UTILITIES) Submit a new meter reading
+POST http://localhost:4000/utility-readings
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.token}}
+
+{
+  "utilityId": 1,
+  "readingValue": 2580.50
+}
+
+###
+### (UTILITIES) Get reading history for a specific utility
+# Change the '1' in the URL to a valid utility ID
+GET http://localhost:4000/utilities/1/readings
+Authorization: Bearer {{login.response.body.token}}
+
+###
+### (PREVENTIVE MAINTENANCE) Schedule a new task
+POST http://localhost:4000/preventive-maintenance
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.token}}
+
+{
+  "machineId": 1,
+  "taskDescription": "Monthly calibration and sensor check",
+  "frequencyDays": 30,
+  "startDate": "2025-10-15"
+}
+
+###
+### (PREVENTIVE MAINTENANCE) Get all scheduled tasks
+GET http://localhost:4000/preventive-maintenance
+Authorization: Bearer {{login.response.body.token}}

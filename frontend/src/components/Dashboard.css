@@ -1,0 +1,28 @@
+/* src/components/Dashboard.css */
+.breakdown-item {
+  border: 1px solid #ccc;
+  padding: 15px;
+  margin-bottom: 10px;
+  border-radius: 5px;
+  background-color: #fff;
+}
+
+.breakdown-actions {
+  margin-top: 10px;
+}
+
+.action-button {
+  margin-right: 10px;
+  padding: 5px 10px;
+  border: 1px solid #007bff;
+  background-color: #fff;
+  color: #007bff;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.action-button:hover {
+  background-color: #007bff;
+  color: #fff;
+}

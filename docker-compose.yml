@@ -1,0 +1,45 @@
+# docker-compose.yml
+
+version: '3.8'
+
+services:
+  database:
+    image: postgres:15
+    container_name: plantmaint_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: your_postgres_password # Use the same password as in your .env file
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    container_name: plantmaint_backend
+    ports:
+      - "4000:4000"
+    depends_on:
+      - database
+    environment:
+      # These will override the values in the .env file
+      DB_HOST: database # The service name of the database container
+      DB_USER: postgres
+      DB_PASSWORD: your_postgres_password
+      DB_PORT: 5432
+      JWT_SECRET: ${JWT_SECRET} # Reads from your local .env file
+      META_VERIFY_TOKEN: ${META_VERIFY_TOKEN}
+      META_PHONE_NUMBER_ID: ${META_PHONE_NUMBER_ID}
+      META_ACCESS_TOKEN: ${META_ACCESS_TOKEN}
+
+  frontend:
+    build: ./frontend
+    container_name: plantmaint_frontend
+    ports:
+      - "8080:80" # Map host port 8080 to the container's port 80
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

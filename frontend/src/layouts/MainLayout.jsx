@@ -1,4 +1,3 @@
-// src/layouts/MainLayout.jsx
 import React from 'react';
 import { Box, Drawer, List, ListItem, ListItemButton, ListItemText, Toolbar, Typography, AppBar } from '@mui/material';
 import { Link, useNavigate } from 'react-router-dom';
@@ -19,7 +18,6 @@ function MainLayout({ children }) {
     <div>
       <Toolbar />
       <List>
-        {/* UPDATED: Added 'Operator' to this list */}
         {user && ['Maintenance Manager', 'Supervisor', 'Maintenance Technician', 'Operator'].includes(user.role) && (
           <ListItem disablePadding>
             <ListItemButton component={Link} to="/dashboard">
@@ -27,8 +25,13 @@ function MainLayout({ children }) {
             </ListItemButton>
           </ListItem>
         )}
-        
-        {/* Show Preventive Maintenance to Managers and Supervisors */}
+        {user && ['Maintenance Manager', 'Supervisor'].includes(user.role) && (
+          <ListItem disablePadding>
+            <ListItemButton component={Link} to="/machines">
+              <ListItemText primary="Equipment" />
+            </ListItemButton>
+          </ListItem>
+        )}
         {user && ['Maintenance Manager', 'Supervisor'].includes(user.role) && (
           <ListItem disablePadding>
             <ListItemButton component={Link} to="/preventive-maintenance">
@@ -36,8 +39,6 @@ function MainLayout({ children }) {
             </ListItemButton>
           </ListItem>
         )}
-        
-        {/* Show User Management to Managers ONLY */}
         {user && user.role === 'Maintenance Manager' && (
           <ListItem disablePadding>
             <ListItemButton component={Link} to="/user-management">

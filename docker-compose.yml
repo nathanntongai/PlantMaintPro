@@ -1,12 +1,9 @@
-
-
 services:
   database:
     image: postgres:15
     container_name: plantmaint_db
     environment:
       POSTGRES_USER: postgres
-      # UPDATED: Use the DB_PASSWORD from Codespaces secrets
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: postgres
     ports:
@@ -24,9 +21,9 @@ services:
     environment:
       DB_HOST: database
       DB_USER: postgres
-      # UPDATED: Use the DB_PASSWORD from Codespaces secrets
       DB_PASSWORD: ${DB_PASSWORD}
       DB_PORT: 5432
+      DB_DATABASE: postgres
       JWT_SECRET: ${JWT_SECRET}
       META_VERIFY_TOKEN: ${META_VERIFY_TOKEN}
       META_PHONE_NUMBER_ID: ${META_PHONE_NUMBER_ID}

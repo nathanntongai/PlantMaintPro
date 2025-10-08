@@ -1,7 +1,7 @@
 // src/pages/Login.jsx
 import React, { useState, useEffect } from 'react';
-import { Link, useLocation } from 'react-router-dom'; // Import Link and useLocation
-import axios from 'axios';
+import { Link, useLocation } from 'react-router-dom';
+import api from '../api'; // UPDATED: Import our central api client instead of axios
 import { useAuth } from '../context/AuthContext';
 import { Container, Paper, Typography, TextField, Button, Box, Alert } from '@mui/material';
 
@@ -13,7 +13,6 @@ function Login() {
   const { login } = useAuth();
   const location = useLocation();
 
-  // Check for a success message passed from the registration page
   useEffect(() => {
     if (location.state?.message) {
       setSuccessMessage(location.state.message);
@@ -24,7 +23,8 @@ function Login() {
     event.preventDefault();
     setError('');
     try {
-      const response = await axios.post('http://localhost:4000/login', { email, password });
+      // UPDATED: Use the 'api' client, which has the correct public baseURL
+      const response = await api.post('/login', { email, password });
       login(response.data.token);
     } catch (err) {
       setError(err.response?.data?.message || 'Login failed.');

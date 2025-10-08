@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(100) UNIQUE NOT NULL, -- Email must be unique across all users
     password_hash VARCHAR(255) NOT NULL, -- We will store a hashed password, not the plain text
     role VARCHAR(50) NOT NULL, -- e.g., 'Operator', 'Supervisor', 'Maintenance Technician' [cite: 55, 58, 60, 63]
+    phone_number VARCHAR(50) UNIQUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 

@@ -1,5 +1,6 @@
 // backend/index.js
 
+require('dotenv').config();
 const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
@@ -21,7 +22,31 @@ app.get('/whatsapp', (req, res) => { const verify_token = process.env.META_VERIF
 app.post('/whatsapp', async (req, res) => { try { const body = req.body; console.log("Incoming webhook:", JSON.stringify(body, null, 2)); if (body.object && body.entry && body.entry[0].changes && body.entry[0].changes[0].value.messages) { const messageData = body.entry[0].changes[0].value.messages[0]; if (messageData.type === 'text') { const from = messageData.from; const fromWithPrefix = `whatsapp:${from}`; const msg_body = messageData.text.body; const userResult = await db.query('SELECT * FROM users WHERE phone_number = $1', [fromWithPrefix]); if (userResult.rows.length === 0) { console.log(`Unrecognized phone number: ${fromWithPrefix}`); await sendWhatsAppMessage(from, "Sorry, your phone number is not registered in the PlantMaint Pro system."); return res.sendStatus(200); } const user = userResult.rows[0]; const parts = msg_body.split(' '); const command = parts[0].toLowerCase(); if (command === 'breakdown') { const machineId = parseInt(parts[1], 10); const description = parts.slice(2).join(' '); if (!machineId || !description) { await sendWhatsAppMessage(from, "Invalid command format. Please use: breakdown <machineId> <description>"); return res.sendStatus(200); } const machineResult = await db.query('SELECT * FROM machines WHERE id = $1 AND company_id = $2', [machineId, user.company_id]); if (machineResult.rows.length === 0) { await sendWhatsAppMessage(from, `Error: Machine with ID ${machineId} was not found in your plant.`); return res.sendStatus(200); } const machineName = machineResult.rows[0].name; await db.query('INSERT INTO breakdowns (machine_id, company_id, reported_by_id, description) VALUES ($1, $2, $3, $4)', [machineId, user.company_id, user.id, description]); console.log(`Successfully created breakdown for machine ${machineId}`); await sendWhatsAppMessage(from, `✅ Breakdown reported successfully for "${machineName}". A team will be dispatched.`); } else if (command === 'status') { const breakdownId = parseInt(parts[1], 10); if (!breakdownId) { await sendWhatsAppMessage(from, "Invalid command format. Please use: status <breakdownId>"); return res.sendStatus(200); } const breakdownResult = await db.query( `SELECT b.status, m.name as machine_name FROM breakdowns b JOIN machines m ON b.machine_id = m.id WHERE b.id = $1 AND b.company_id = $2`, [breakdownId, user.company_id] ); if (breakdownResult.rows.length === 0) { await sendWhatsAppMessage(from, `Error: Breakdown with ID ${breakdownId} was not found.`); } else { const breakdown = breakdownResult.rows[0]; await sendWhatsAppMessage(from, `ℹ️ Status for Breakdown #${breakdownId} (${breakdown.machine_name}) is: *${breakdown.status}*`); } } else { await sendWhatsAppMessage(from, `Sorry, I don't understand the command "${command}". Please use a valid command like 'breakdown' or 'status'.`); } } } res.sendStatus(200); } catch (error) { console.error('Error processing WhatsApp message:', error); res.sendStatus(200); } });
 
 // --- AUTH ENDPOINTS (Public) ---
-app.post('/register', async (req, res) => { try { const { companyName, userName, email, password } = req.body; const saltRounds = 10; const passwordHash = await bcrypt.hash(password, saltRounds); const companyResult = await db.query('INSERT INTO companies (name) VALUES ($1) RETURNING id', [companyName]); const newCompanyId = companyResult.rows[0].id; const userResult = await db.query('INSERT INTO users (company_id, name, email, password_hash, role) VALUES ($1, $2, $3, $4, $5) RETURNING id, email, role', [newCompanyId, userName, email, passwordHash, 'Maintenance Manager']); res.status(201).json({ message: 'Registration successful!', user: userResult.rows[0] }); } catch (error) { console.error('Registration error:', error); if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email already in use.' }); } res.status(500).json({ message: 'Internal server error' }); } });
+// UPDATED to include phone number
+app.post('/register', async (req, res) => { 
+    try {
+        const { companyName, userName, email, password, phoneNumber } = req.body;
+        const saltRounds = 10;
+        const passwordHash = await bcrypt.hash(password, saltRounds);
+
+        const companyResult = await db.query('INSERT INTO companies (name) VALUES ($1) RETURNING id', [companyName]);
+        const newCompanyId = companyResult.rows[0].id;
+
+        const formattedPhoneNumber = phoneNumber ? `whatsapp:${phoneNumber.replace(/[^0-9]/g, '')}` : null;
+
+        const userResult = await db.query(
+            `INSERT INTO users (company_id, name, email, password_hash, role, phone_number) 
+             VALUES ($1, $2, $3, $4, $5, $6) 
+             RETURNING id, name, email, role`,
+            [newCompanyId, userName, email, passwordHash, 'Maintenance Manager', formattedPhoneNumber]
+        );
+        res.status(201).json({ message: 'Registration successful!', user: userResult.rows[0] });
+    } catch (error) {
+        console.error('Registration error:', error);
+        if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); }
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
 app.post('/login', async (req, res) => { try { const { email, password } = req.body; const result = await db.query('SELECT * FROM users WHERE email = $1', [email]); const user = result.rows[0]; const passwordMatches = user ? await bcrypt.compare(password, user.password_hash) : false; if (!passwordMatches) { return res.status(401).json({ message: 'Invalid credentials' }); } const token = jwt.sign({ userId: user.id, role: user.role, companyId: user.company_id }, process.env.JWT_SECRET, { expiresIn: '8h' }); res.json({ message: 'Login successful!', token: token }); } catch (error) { console.error('Login error:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
 // --- PROTECTED API ENDPOINTS ---
@@ -32,37 +57,8 @@ const MANAGER_ONLY = ['Maintenance Manager'];
 // User Management
 app.get('/users', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT id, name, email, role, phone_number FROM users WHERE company_id = $1 ORDER BY name ASC', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching users:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/users', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { name, email, password, role, phoneNumber } = req.body; const { companyId } = req.user; const passwordHash = await bcrypt.hash(password, 10); const formattedPhoneNumber = phoneNumber ? `whatsapp:${phoneNumber.replace(/[^0-9]/g, '')}` : null; const result = await db.query( `INSERT INTO users (company_id, name, email, password_hash, role, phone_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role, phone_number`, [companyId, name, email, passwordHash, role, formattedPhoneNumber] ); res.status(201).json({ message: 'User created successfully!', user: result.rows[0] }); } catch (error) { if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); } console.error('Error creating user:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.patch('/users/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const userIdToEdit = req.params.id; const { name, email, role, phoneNumber } = req.body; const { companyId } = req.user; const formattedPhoneNumber = phoneNumber ? `whatsapp:${phoneNumber.replace(/[^0-9]/g, '')}` : null; const result = await db.query( `UPDATE users SET name = $1, email = $2, role = $3, phone_number = $4 WHERE id = $5 AND company_id = $6 RETURNING id, name, email, role, phone_number`, [name, email, role, formattedPhoneNumber, userIdToEdit, companyId] ); if (result.rows.length === 0) { return res.status(404).json({ message: "User not found or you do not have permission to edit this user." }); } res.json({ message: 'User updated successfully!', user: result.rows[0] }); } catch (error) { if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); } console.error('Error updating user:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.delete('/users/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const userIdToDelete = req.params.id; const { companyId, userId } = req.user; if (userIdToDelete == userId) { return res.status(403).json({ message: "You cannot delete your own account." }); } const result = await db.query( 'DELETE FROM users WHERE id = $1 AND company_id = $2', [userIdToDelete, companyId] ); if (result.rowCount === 0) { return res.status(404).json({ message: "User not found or you do not have permission to delete this user." }); } res.status(200).json({ message: 'User deleted successfully' }); } catch (error) { console.error('Error deleting user:', error); res.status(500).json({ message: 'Internal server error' }); } });
-// NEW: Endpoint to edit/update a user
-app.patch('/users/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => {
-    try {
-        const userIdToEdit = req.params.id;
-        const { name, email, role, phoneNumber } = req.body;
-        const { companyId } = req.user;
-
-        const formattedPhoneNumber = phoneNumber ? `whatsapp:${phoneNumber.replace(/[^0-9]/g, '')}` : null;
-
-        const result = await db.query(
-            `UPDATE users SET name = $1, email = $2, role = $3, phone_number = $4
-             WHERE id = $5 AND company_id = $6
-             RETURNING id, name, email, role, phone_number`,
-            [name, email, role, formattedPhoneNumber, userIdToEdit, companyId]
-        );
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ message: "User not found or you do not have permission to edit this user." });
-        }
-
-        res.json({ message: 'User updated successfully!', user: result.rows[0] });
-    } catch (error) {
-        if (error.code === '23505') {
-            return res.status(400).json({ message: 'Error: Email or phone number already in use.' });
-        }
-        console.error('Error updating user:', error);
-        res.status(500).json({ message: 'Internal server error' });
-    }
-});
-
 
 // (All other protected API endpoints remain the same)
 app.get('/machines', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT * FROM machines WHERE company_id = $1 ORDER BY created_at DESC', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching machines:', error); res.status(500).json({ message: 'Internal server error' }); } });
@@ -73,7 +69,7 @@ app.patch('/breakdowns/:id/status', authenticateToken, authorize(MANAGER_AND_SUP
 app.get('/utilities', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT * FROM utilities WHERE company_id = $1', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching utilities:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/utilities', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { name, unit } = req.body; const { companyId } = req.user; const result = await db.query('INSERT INTO utilities (company_id, name, unit) VALUES ($1, $2, $3) RETURNING *', [companyId, name, unit]); res.status(201).json({ message: 'Utility created successfully!', utility: result.rows[0] }); } catch (error) { console.error('Error creating utility:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/utility-readings', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { utilityId, readingValue } = req.body; const { userId, companyId } = req.user; const result = await db.query('INSERT INTO utility_readings (utility_id, company_id, recorded_by_id, reading_value) VALUES ($1, $2, $3, $4) RETURNING *', [utilityId, companyId, userId, readingValue]); res.status(201).json({ message: 'Reading submitted successfully!', reading: result.rows[0] }); } catch (error) { console.error('Error submitting utility reading:', error); res.status(500).json({ message: 'Internal server error' }); } });
-app.get('/utilities/:utilityId/readings', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { utilityId } = req.params; const { companyId } = req.user; const query = ` SELECT ur.id, ur.reading_value, ur.recorded_at, u.name as recorded_by_name FROM utility_readings ur JOIN users u ON ur.recorded_by_id = u.id WHERE ur.utility_id = $1 AND ur.company_id = $2 ORDER BY ur.recorded_at DESC `; const result = await db.query(query, [utilityId, companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching utility readings:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.get('/utilities/:utilityId/readings', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { utilityId } = req.params; const { companyId } = req.user; const query = ` SELECT ur.id, ur.reading_value, ur.recorded_at, u.name as recorded_by_name FROM utility_readings ur JOIN users u ON ur.recorded_by_id = u.id WHERE ur.utility_id = $1 AND ur.company_id = $2 ORDER BY ur.recorded_at DESC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching utility readings:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.get('/dashboard/kpis', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const activeBreakdownsQuery = "SELECT COUNT(*) FROM breakdowns WHERE company_id = $1 AND status NOT IN ('Resolved', 'Closed')"; const activeBreakdownsResult = await db.query(activeBreakdownsQuery, [companyId]); const machinesNeedingAttentionQuery = "SELECT COUNT(DISTINCT machine_id) FROM breakdowns WHERE company_id = $1 AND status NOT IN ('Resolved', 'Closed')"; const machinesNeedingAttentionResult = await db.query(machinesNeedingAttentionQuery, [companyId]); const kpis = { activeBreakdowns: parseInt(activeBreakdownsResult.rows[0].count, 10), machinesNeedingAttention: parseInt(machinesNeedingAttentionResult.rows[0].count, 10), }; res.json(kpis); } catch (error) { console.error('Error fetching KPIs:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.get('/charts/utility-consumption', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const { utilityId, days } = req.query; const query = ` SELECT DATE_TRUNC('day', recorded_at AT TIME ZONE 'UTC') AS date, SUM(reading_value) AS "totalConsumption" FROM utility_readings WHERE utility_id = $1 AND company_id = $2 AND recorded_at >= NOW() - ($3 * INTERVAL '1 day') GROUP BY date ORDER BY date ASC `; const result = await db.query(query, [utilityId, companyId, days]); res.json(result.rows); } catch (error) { console.error('Error fetching chart data:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.get('/preventive-maintenance', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.company_id = $1 ORDER BY pmt.next_due_date ASC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching maintenance tasks:', error); res.status(500).json({ message: 'Internal server error' }); } });

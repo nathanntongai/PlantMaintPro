@@ -45,7 +45,7 @@ function Register() {
           <TextField margin="normal" required fullWidth id="email" label="Email Address" name="email" autoComplete="email" value={formData.email} onChange={handleInputChange} />
           <TextField margin="normal" required fullWidth name="password" label="Password" type="password" id="password" value={formData.password} onChange={handleInputChange} />
           {/* New field for phone number */}
-          <TextField margin="normal" required fullWidth name="phoneNumber" label="WhatsApp Phone Number (e.g. 254...)" type="text" id="phoneNumber" value={formData.phoneNumber} onChange={handleInputChange} />
+          <TextField margin="normal" required fullWidth name="phoneNumber" label="WhatsApp Phone Number (e.g. +254...)" type="text" id="phoneNumber" value={formData.phoneNumber} onChange={handleInputChange} />
           <Button type="submit" fullWidth variant="contained" sx={{ mt: 3, mb: 2 }}>
             Register
           </Button>

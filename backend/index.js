@@ -84,22 +84,50 @@ app.post('/register', async (req, res) => {
         res.status(500).json({ message: 'Internal server error' });
     }
 });
+// --- UPDATED LOGIN ENDPOINT ---
 app.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
-        const result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+
+        // Query for the user and join with the companies table to get the company name
+        const query = `
+            SELECT u.*, c.name as company_name 
+            FROM users u 
+            JOIN companies c ON u.company_id = c.id 
+            WHERE u.email = $1
+        `;
+        const result = await db.query(query, [email]);
         const user = result.rows[0];
+
         const passwordMatches = user ? await bcrypt.compare(password, user.password_hash) : false;
+
         if (!passwordMatches) {
             return res.status(401).json({ message: 'Invalid credentials' });
         }
-        const token = jwt.sign({ userId: user.id, role: user.role, companyId: user.company_id }, process.env.JWT_SECRET, { expiresIn: '8h' });
-        res.json({ message: 'Login successful!', token: token });
+
+        // Create the token payload
+        const tokenPayload = { 
+            userId: user.id, 
+            role: user.role, 
+            companyId: user.company_id 
+        };
+        const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, { expiresIn: '8h' });
+
+        // Remove sensitive data before sending the user object back
+        delete user.password_hash;
+
+        // Send back the token AND the user object (which now includes company_name)
+        res.json({ 
+            message: 'Login successful!', 
+            token: token,
+            user: user 
+        });
     } catch (error) {
         console.error('Login error:', error);
         res.status(500).json({ message: 'Internal server error' });
     }
 });
+
 
 // --- PROTECTED API ENDPOINTS ---
 const ALL_ROLES = ['Maintenance Manager', 'Supervisor', 'Maintenance Technician', 'Operator'];

@@ -5,45 +5,28 @@ const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
   const [token, setToken] = useState(localStorage.getItem('token'));
-  // NEW: State to hold the decoded user object from the token
-  const [user, setUser] = useState(null);
+  // Store the full user object in state
+  const [user, setUser] = useState(() => {
+    const storedUser = localStorage.getItem('user');
+    return storedUser ? JSON.parse(storedUser) : null;
+  });
 
-  // NEW: useEffect to decode the token whenever it changes
-  useEffect(() => {
-    if (token) {
-      try {
-        // The token is in three parts separated by dots. The middle part is the payload.
-        const payload = JSON.parse(atob(token.split('.')[1]));
-        setUser(payload); // Set the user state with the decoded payload
-      } catch (e) {
-        console.error("Failed to decode token", e);
-        // If token is invalid, clear it
-        localStorage.removeItem('token');
-        setToken(null);
-        setUser(null);
-      }
-    } else {
-      setUser(null);
-    }
-  }, [token]); // This effect runs whenever the 'token' state changes
-
-  const login = (newToken) => {
+  // The login function now accepts a user object
+  const login = (newToken, newUser) => {
     setToken(newToken);
+    setUser(newUser);
     localStorage.setItem('token', newToken);
+    localStorage.setItem('user', JSON.stringify(newUser)); // Store user object in local storage
   };
 
   const logout = () => {
     setToken(null);
+    setUser(null);
     localStorage.removeItem('token');
+    localStorage.removeItem('user');
   };
 
-  // Provide the user object along with other values
-  const contextValue = {
-    token,
-    user, // <-- Make the user object available to the app
-    login,
-    logout,
-  };
+  const contextValue = { token, user, login, logout };
 
   return (
     <AuthContext.Provider value={contextValue}>

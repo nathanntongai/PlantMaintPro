@@ -1,20 +1,29 @@
 // src/pages/PreventiveMaintenance.jsx
 import React, { useState, useEffect } from 'react';
 import api from '../api';
+import { useAuth } from '../context/AuthContext';
 import { 
-  Container, Typography, Card, CardContent, CardActions, CircularProgress, Alert, Button, Box,
-  Dialog, DialogTitle, DialogContent, DialogActions, TextField, Select, MenuItem, FormControl, InputLabel
+  Container, Typography, Card, CardContent, CardActions, CircularProgress, Alert, Button, Box, IconButton,
+  Dialog, DialogTitle, DialogContent, DialogActions, TextField, Select, MenuItem, FormControl, InputLabel, DialogContentText
 } from '@mui/material';
+import DeleteIcon from '@mui/icons-material/Delete';
+import EditIcon from '@mui/icons-material/Edit';
 
 function PreventiveMaintenance() {
+  const { user } = useAuth();
   const [tasks, setTasks] = useState([]);
   const [machines, setMachines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+  // State for the main form dialog (Add/Edit)
   const [open, setOpen] = useState(false);
-  const [newTask, setNewTask] = useState({
-    machineId: '', taskDescription: '', frequencyDays: 30, startDate: new Date().toISOString().split('T')[0]
-  });
+  const [formData, setFormData] = useState({});
+  const [editingTask, setEditingTask] = useState(null);
+  
+  // State for the delete confirmation dialog
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [taskToDelete, setTaskToDelete] = useState(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -24,26 +33,39 @@ function PreventiveMaintenance() {
         ]);
         setTasks(tasksResponse.data);
         setMachines(machinesResponse.data);
-      } catch (err) { setError('Failed to fetch data.'); console.error(err); } 
+      } catch (err) { setError('Failed to fetch data.'); } 
       finally { setLoading(false); }
     };
     fetchData();
   }, []);
 
-  const handleClickOpen = () => setOpen(true);
-  const handleClose = () => setOpen(false);
-
-  const handleInputChange = (event) => {
-    const { name, value } = event.target;
-    setNewTask(prevState => ({ ...prevState, [name]: value }));
+  // --- Dialog and Form Handlers ---
+  const handleOpenAddDialog = () => {
+    setEditingTask(null);
+    setFormData({ machineId: '', taskDescription: '', frequencyDays: 30, startDate: new Date().toISOString().split('T')[0] });
+    setOpen(true);
   };
 
-  const handleCreateTask = async () => {
+  const handleOpenEditDialog = (task) => {
+    setEditingTask(task);
+    setFormData({ machineId: task.machine_id, taskDescription: task.task_description, frequencyDays: task.frequency_days, next_due_date: new Date(task.next_due_date).toISOString().split('T')[0] });
+    setOpen(true);
+  };
+  
+  const handleClose = () => setOpen(false);
+  const handleInputChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
+
+  const handleSubmit = async () => {
     try {
-      const response = await api.post('/preventive-maintenance', newTask);
-      setTasks(currentTasks => [response.data.task, ...currentTasks].sort((a, b) => new Date(a.next_due_date) - new Date(b.next_due_date)));
+      if (editingTask) {
+        const response = await api.patch(`/preventive-maintenance/${editingTask.id}`, formData);
+        setTasks(tasks.map(t => t.id === editingTask.id ? response.data.task : t).sort((a,b) => new Date(a.next_due_date) - new Date(b.next_due_date)));
+      } else {
+        const response = await api.post('/preventive-maintenance', formData);
+        setTasks([...tasks, response.data.task].sort((a,b) => new Date(a.next_due_date) - new Date(b.next_due_date)));
+      }
       handleClose();
-    } catch (err) { setError('Failed to create task.'); console.error(err); }
+    } catch (err) { setError(err.response?.data?.message || 'An error occurred.'); }
   };
   
   // NEW: Function to handle completing a task
@@ -61,53 +83,82 @@ function PreventiveMaintenance() {
     }
   };
 
+  const handleDeleteClick = (task) => { setTaskToDelete(task); setConfirmOpen(true); };
+  const handleConfirmClose = () => { setConfirmOpen(false); setTaskToDelete(null); };
+  const handleConfirmDelete = async () => {
+    if (!taskToDelete) return;
+    try {
+      await api.delete(`/preventive-maintenance/${taskToDelete.id}`);
+      setTasks(tasks.filter(t => t.id !== taskToDelete.id));
+      handleConfirmClose();
+    } catch (err) { setError(err.response?.data?.message || 'Failed to delete task.'); }
+  };
+
   return (
     <Container maxWidth="lg">
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
         <Typography variant="h4" component="h1" gutterBottom>Preventive Maintenance Schedule</Typography>
-        <Button variant="contained" onClick={handleClickOpen}>Schedule New Task</Button>
+        {user && user.role === 'Maintenance Manager' && (
+          <Button variant="contained" onClick={handleOpenAddDialog}>Schedule New Task</Button>
+        )}
       </Box>
 
+      {/* Add/Edit Dialog */}
       <Dialog open={open} onClose={handleClose}>
-        <DialogTitle>Schedule a New Maintenance Task</DialogTitle>
+        <DialogTitle>{editingTask ? 'Edit Task' : 'Schedule a New Task'}</DialogTitle>
         <DialogContent>
-          <FormControl fullWidth margin="dense"><InputLabel id="machine-select-label">Machine</InputLabel><Select labelId="machine-select-label" name="machineId" value={newTask.machineId} label="Machine" onChange={handleInputChange}>{machines.map(machine => (<MenuItem key={machine.id} value={machine.id}>{machine.name}</MenuItem>))}</Select></FormControl>
-          <TextField margin="dense" name="taskDescription" label="Task Description" type="text" fullWidth variant="outlined" value={newTask.taskDescription} onChange={handleInputChange} />
-          <TextField margin="dense" name="frequencyDays" label="Frequency (in days)" type="number" fullWidth variant="outlined" value={newTask.frequencyDays} onChange={handleInputChange} />
-          <TextField margin="dense" name="startDate" label="First Due Date" type="date" fullWidth variant="outlined" value={newTask.startDate} onChange={handleInputChange} InputLabelProps={{ shrink: true }} />
+          <FormControl fullWidth margin="dense">
+            <InputLabel>Machine</InputLabel>
+            <Select name="machineId" value={formData.machineId || ''} label="Machine" onChange={handleInputChange}>
+              {machines.map(m => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}
+            </Select>
+          </FormControl>
+          <TextField margin="dense" name="taskDescription" label="Task Description" fullWidth value={formData.taskDescription || ''} onChange={handleInputChange} />
+          <TextField margin="dense" name="frequencyDays" label="Frequency (in days)" type="number" fullWidth value={formData.frequencyDays || ''} onChange={handleInputChange} />
+          {editingTask ? (
+            <TextField margin="dense" name="next_due_date" label="Next Due Date" type="date" fullWidth value={formData.next_due_date || ''} onChange={handleInputChange} InputLabelProps={{ shrink: true }} />
+          ) : (
+            <TextField margin="dense" name="startDate" label="First Due Date" type="date" fullWidth value={formData.startDate || ''} onChange={handleInputChange} InputLabelProps={{ shrink: true }} />
+          )}
         </DialogContent>
-        <DialogActions><Button onClick={handleClose}>Cancel</Button><Button onClick={handleCreateTask}>Create</Button></DialogActions>
+        <DialogActions>
+          <Button onClick={handleClose}>Cancel</Button>
+          <Button onClick={handleSubmit}>{editingTask ? 'Save Changes' : 'Create'}</Button>
+        </DialogActions>
+      </Dialog>
+      
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={confirmOpen} onClose={handleConfirmClose}>
+        <DialogTitle>Confirm Deletion</DialogTitle>
+        <DialogContent><DialogContentText>Are you sure you want to delete this scheduled task?</DialogContentText></DialogContent>
+        <DialogActions><Button onClick={handleConfirmClose}>Cancel</Button><Button onClick={handleConfirmDelete} color="error">Delete</Button></DialogActions>
       </Dialog>
 
       {loading && <CircularProgress />}
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
-      {!loading && !error && (
-        tasks.length > 0 ? (
-          tasks.map(task => (
-            <Card key={task.id} sx={{ mb: 2 }}>
-              <CardContent>
-                <Typography variant="h6">{task.task_description}</Typography>
-                <Typography color="text.secondary">Machine: {task.machine_name}</Typography>
-                <Typography variant="body2" sx={{ mt: 1 }}>Frequency: Every {task.frequency_days} days</Typography>
-                <Typography variant="body2">Next Due: <strong>{new Date(task.next_due_date).toLocaleDateString()}</strong></Typography>
-                {/* NEW: Display the last performed date if it exists */}
-                {task.last_performed_at && (
-                    <Typography variant="caption" color="text.secondary">
-                        Last Performed: {new Date(task.last_performed_at).toLocaleDateString()}
-                    </Typography>
-                )}
-              </CardContent>
-              {/* NEW: Add CardActions to hold the button */}
-              <CardActions>
-                <Button size="small" onClick={() => handleCompleteTask(task.id)}>Mark as Complete</Button>
-              </CardActions>
-            </Card>
-          ))
-        ) : (
-          <Typography>No preventive maintenance tasks scheduled.</Typography>
-        )
-      )}
+      {!loading && tasks.map(task => (
+        <Card key={task.id} sx={{ mb: 2 }}>
+          <CardContent>
+            <Typography variant="h6">{task.task_description}</Typography>
+            <Typography color="text.secondary">Machine: {task.machine_name}</Typography>
+            <Typography variant="body2" sx={{ mt: 1 }}>Frequency: Every {task.frequency_days} days</Typography>
+            <Typography variant="body2">Next Due: <strong>{new Date(task.next_due_date).toLocaleDateString()}</strong></Typography>
+            {task.last_performed_at && (<Typography variant="caption" color="text.secondary">Last Performed: {new Date(task.last_performed_at).toLocaleDateString()}</Typography>)}
+          </CardContent>
+          <CardActions>
+            {user && ['Maintenance Manager', 'Supervisor'].includes(user.role) && (
+              <Button size="small" onClick={() => handleCompleteTask(task.id)}>Mark as Complete</Button>
+            )}
+            {user && user.role === 'Maintenance Manager' && (
+              <>
+                <IconButton onClick={() => handleOpenEditDialog(task)} color="primary"><EditIcon fontSize="small" /></IconButton>
+                <IconButton onClick={() => handleDeleteClick(task)} color="error"><DeleteIcon fontSize="small" /></IconButton>
+              </>
+            )}
+          </CardActions>
+        </Card>
+      ))}
     </Container>
   );
 }

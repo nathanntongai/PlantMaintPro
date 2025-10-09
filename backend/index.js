@@ -162,9 +162,62 @@ app.get('/dashboard/kpis', authenticateToken, authorize(MANAGER_AND_SUPERVISOR),
 app.get('/charts/utility-consumption', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const { utilityId, days } = req.query; const query = ` SELECT DATE_TRUNC('day', recorded_at AT TIME ZONE 'UTC') AS date, SUM(reading_value) AS "totalConsumption" FROM utility_readings WHERE utility_id = $1 AND company_id = $2 AND recorded_at >= NOW() - ($3 * INTERVAL '1 day') GROUP BY date ORDER BY date ASC `; const result = await db.query(query, [utilityId, companyId, days]); res.json(result.rows); } catch (error) { console.error('Error fetching chart data:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
 // Preventive Maintenance
-app.get('/preventive-maintenance', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.company_id = $1 ORDER BY pmt.next_due_date ASC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching maintenance tasks:', error); res.status(500).json({ message: 'Internal server error' }); } });
-app.post('/preventive-maintenance', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { machineId, taskDescription, frequencyDays, startDate } = req.body; const { companyId } = req.user; const nextDueDate = new Date(startDate); const result = await db.query( `INSERT INTO preventive_maintenance_tasks (machine_id, company_id, task_description, frequency_days, next_due_date) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [machineId, companyId, taskDescription, frequencyDays, nextDueDate] ); res.status(201).json({ message: 'Preventive maintenance task scheduled!', task: result.rows[0] }); } catch (error) { console.error('Error scheduling maintenance task:', error); res.status(500).json({ message: 'Internal server error' }); } });
-app.post('/preventive-maintenance/:id/complete', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { id } = req.params; const { companyId } = req.user; const taskRes = await db.query('SELECT frequency_days FROM preventive_maintenance_tasks WHERE id = $1 AND company_id = $2', [id, companyId]); if (taskRes.rows.length === 0) { return res.status(404).json({ message: 'Task not found.' }); } const { frequency_days } = taskRes.rows[0]; const query = ` UPDATE preventive_maintenance_tasks SET last_performed_at = NOW(), next_due_date = (NOW() + ($1 * INTERVAL '1 day'))::DATE WHERE id = $2 AND company_id = $3 RETURNING * `; const result = await db.query(query, [frequency_days, id, companyId]); const updatedTaskQuery = ` SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.id = $1 `; const finalResult = await db.query(updatedTaskQuery, [id]); res.json({ message: 'Task marked as complete!', task: finalResult.rows[0] }); } catch (error) { console.error('Error completing task:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.get('/preventive-maintenance', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { /* ... existing code ... */ });
+app.post('/preventive-maintenance', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { /* ... existing code ... */ });
+app.post('/preventive-maintenance/:id/complete', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { /* ... existing code ... */ });
+
+// NEW: Endpoint to edit/update a preventive maintenance task
+app.patch('/preventive-maintenance/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { taskDescription, frequencyDays, next_due_date } = req.body;
+        const { companyId } = req.user;
+
+        const result = await db.query(
+            `UPDATE preventive_maintenance_tasks 
+             SET task_description = $1, frequency_days = $2, next_due_date = $3
+             WHERE id = $4 AND company_id = $5 RETURNING *`,
+            [taskDescription, frequencyDays, next_due_date, id, companyId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: 'Task not found.' });
+        }
+        
+        // We need to re-join with machines table to get the machine_name for the response
+        const finalResult = await db.query(
+            `SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt
+             JOIN machines m ON pmt.machine_id = m.id WHERE pmt.id = $1`, [id]
+        );
+
+        res.json({ message: 'Task updated successfully!', task: finalResult.rows[0] });
+    } catch (error) {
+        console.error('Error updating preventive maintenance task:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// NEW: Endpoint to delete a preventive maintenance task
+app.delete('/preventive-maintenance/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { companyId } = req.user;
+
+        const result = await db.query(
+            'DELETE FROM preventive_maintenance_tasks WHERE id = $1 AND company_id = $2',
+            [id, companyId]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(404).json({ message: 'Task not found.' });
+        }
+
+        res.status(200).json({ message: 'Task deleted successfully.' });
+    } catch (error) {
+        console.error('Error deleting preventive maintenance task:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
 
 // --- SERVER STARTUP ---
 app.listen(PORT, () => {

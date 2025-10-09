@@ -12,9 +12,10 @@ const { sendWhatsAppMessage } = require('./whatsappService');
 const app = express();
 const PORT = 4000;
 
+// Middleware Setup
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
-app.use(cors());
+app.use(cors()); // This line is crucial for fixing the error
 
 app.get('/', (req, res) => { res.send('Your PlantMaint Pro server is running!'); });
 
@@ -84,50 +85,24 @@ app.post('/register', async (req, res) => {
         res.status(500).json({ message: 'Internal server error' });
     }
 });
-// --- UPDATED LOGIN ENDPOINT ---
 app.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
-
-        // Query for the user and join with the companies table to get the company name
-        const query = `
-            SELECT u.*, c.name as company_name 
-            FROM users u 
-            JOIN companies c ON u.company_id = c.id 
-            WHERE u.email = $1
-        `;
+        const query = `SELECT u.*, c.name as company_name FROM users u JOIN companies c ON u.company_id = c.id WHERE u.email = $1`;
         const result = await db.query(query, [email]);
         const user = result.rows[0];
-
         const passwordMatches = user ? await bcrypt.compare(password, user.password_hash) : false;
-
         if (!passwordMatches) {
             return res.status(401).json({ message: 'Invalid credentials' });
         }
-
-        // Create the token payload
-        const tokenPayload = { 
-            userId: user.id, 
-            role: user.role, 
-            companyId: user.company_id 
-        };
-        const token = jwt.sign(tokenPayload, process.env.JWT_SECRET, { expiresIn: '8h' });
-
-        // Remove sensitive data before sending the user object back
+        const token = jwt.sign({ userId: user.id, role: user.role, companyId: user.company_id }, process.env.JWT_SECRET, { expiresIn: '8h' });
         delete user.password_hash;
-
-        // Send back the token AND the user object (which now includes company_name)
-        res.json({ 
-            message: 'Login successful!', 
-            token: token,
-            user: user 
-        });
+        res.json({ message: 'Login successful!', token: token, user: user });
     } catch (error) {
         console.error('Login error:', error);
         res.status(500).json({ message: 'Internal server error' });
     }
 });
-
 
 // --- PROTECTED API ENDPOINTS ---
 const ALL_ROLES = ['Maintenance Manager', 'Supervisor', 'Maintenance Technician', 'Operator'];
@@ -137,8 +112,8 @@ const MANAGER_ONLY = ['Maintenance Manager'];
 // User Management
 app.get('/users', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT id, name, email, role, phone_number FROM users WHERE company_id = $1 ORDER BY name ASC', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching users:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/users', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { name, email, password, role, phoneNumber } = req.body; const { companyId } = req.user; const passwordHash = await bcrypt.hash(password, 10); const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null; const result = await db.query( `INSERT INTO users (company_id, name, email, password_hash, role, phone_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role, phone_number`, [companyId, name, email, passwordHash, role, formattedPhoneNumber] ); res.status(201).json({ message: 'User created successfully!', user: result.rows[0] }); } catch (error) { if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); } console.error('Error creating user:', error); res.status(500).json({ message: 'Internal server error' }); } });
-app.patch('/users/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const userIdToEdit = req.params.id; const { name, email, role, phoneNumber } = req.body; const { companyId } = req.user; const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null; const result = await db.query( `UPDATE users SET name = $1, email = $2, role = $3, phone_number = $4 WHERE id = $5 AND company_id = $6 RETURNING id, name, email, role, phone_number`, [name, email, role, formattedPhoneNumber, userIdToEdit, companyId] ); if (result.rows.length === 0) { return res.status(404).json({ message: "User not found or you do not have permission to edit this user." }); } res.json({ message: 'User updated successfully!', user: result.rows[0] }); } catch (error) { if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); } console.error('Error updating user:', error); res.status(500).json({ message: 'Internal server error' }); } });
-app.delete('/users/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const userIdToDelete = req.params.id; const { companyId, userId } = req.user; if (userIdToDelete == userId) { return res.status(403).json({ message: "You cannot delete your own account." }); } const result = await db.query( 'DELETE FROM users WHERE id = $1 AND company_id = $2', [userIdToDelete, companyId] ); if (result.rowCount === 0) { return res.status(404).json({ message: "User not found or you do not have permission to delete this user." }); } res.status(200).json({ message: 'User deleted successfully' }); } catch (error) { console.error('Error deleting user:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.patch('/users/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const userIdToEdit = req.params.id; const { name, email, role, phoneNumber } = req.body; const { companyId } = req.user; const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null; const result = await db.query( `UPDATE users SET name = $1, email = $2, role = $3, phone_number = $4 WHERE id = $5 AND company_id = $6 RETURNING id, name, email, role, phone_number`, [name, email, role, formattedPhoneNumber, userIdToEdit, companyId] ); if (result.rows.length === 0) { return res.status(404).json({ message: "User not found." }); } res.json({ message: 'User updated!', user: result.rows[0] }); } catch (error) { if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); } console.error('Error updating user:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.delete('/users/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const userIdToDelete = req.params.id; const { companyId, userId } = req.user; if (userIdToDelete == userId) { return res.status(403).json({ message: "You cannot delete your own account." }); } const result = await db.query( 'DELETE FROM users WHERE id = $1 AND company_id = $2', [userIdToDelete, companyId] ); if (result.rowCount === 0) { return res.status(404).json({ message: "User not found." }); } res.status(200).json({ message: 'User deleted.' }); } catch (error) { console.error('Error deleting user:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
 // Machine Management
 app.get('/machines', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT * FROM machines WHERE company_id = $1 ORDER BY name ASC', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching machines:', error); res.status(500).json({ message: 'Internal server error' }); } });
@@ -162,62 +137,11 @@ app.get('/dashboard/kpis', authenticateToken, authorize(MANAGER_AND_SUPERVISOR),
 app.get('/charts/utility-consumption', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const { utilityId, days } = req.query; const query = ` SELECT DATE_TRUNC('day', recorded_at AT TIME ZONE 'UTC') AS date, SUM(reading_value) AS "totalConsumption" FROM utility_readings WHERE utility_id = $1 AND company_id = $2 AND recorded_at >= NOW() - ($3 * INTERVAL '1 day') GROUP BY date ORDER BY date ASC `; const result = await db.query(query, [utilityId, companyId, days]); res.json(result.rows); } catch (error) { console.error('Error fetching chart data:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
 // Preventive Maintenance
-app.get('/preventive-maintenance', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { /* ... existing code ... */ });
-app.post('/preventive-maintenance', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { /* ... existing code ... */ });
-app.post('/preventive-maintenance/:id/complete', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { /* ... existing code ... */ });
-
-// NEW: Endpoint to edit/update a preventive maintenance task
-app.patch('/preventive-maintenance/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { taskDescription, frequencyDays, next_due_date } = req.body;
-        const { companyId } = req.user;
-
-        const result = await db.query(
-            `UPDATE preventive_maintenance_tasks 
-             SET task_description = $1, frequency_days = $2, next_due_date = $3
-             WHERE id = $4 AND company_id = $5 RETURNING *`,
-            [taskDescription, frequencyDays, next_due_date, id, companyId]
-        );
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ message: 'Task not found.' });
-        }
-        
-        // We need to re-join with machines table to get the machine_name for the response
-        const finalResult = await db.query(
-            `SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt
-             JOIN machines m ON pmt.machine_id = m.id WHERE pmt.id = $1`, [id]
-        );
-
-        res.json({ message: 'Task updated successfully!', task: finalResult.rows[0] });
-    } catch (error) {
-        console.error('Error updating preventive maintenance task:', error);
-        res.status(500).json({ message: 'Internal server error' });
-    }
-});
-
-// NEW: Endpoint to delete a preventive maintenance task
-app.delete('/preventive-maintenance/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { companyId } = req.user;
-
-        const result = await db.query(
-            'DELETE FROM preventive_maintenance_tasks WHERE id = $1 AND company_id = $2',
-            [id, companyId]
-        );
-
-        if (result.rowCount === 0) {
-            return res.status(404).json({ message: 'Task not found.' });
-        }
-
-        res.status(200).json({ message: 'Task deleted successfully.' });
-    } catch (error) {
-        console.error('Error deleting preventive maintenance task:', error);
-        res.status(500).json({ message: 'Internal server error' });
-    }
-});
+app.get('/preventive-maintenance', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.company_id = $1 ORDER BY pmt.next_due_date ASC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching maintenance tasks:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.post('/preventive-maintenance', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { machineId, taskDescription, frequencyDays, startDate } = req.body; const { companyId } = req.user; const nextDueDate = new Date(startDate); const result = await db.query( `INSERT INTO preventive_maintenance_tasks (machine_id, company_id, task_description, frequency_days, next_due_date) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [machineId, companyId, taskDescription, frequencyDays, nextDueDate] ); res.status(201).json({ message: 'Preventive maintenance task scheduled!', task: result.rows[0] }); } catch (error) { console.error('Error scheduling maintenance task:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.patch('/preventive-maintenance/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { taskDescription, frequencyDays, next_due_date } = req.body; const { companyId } = req.user; const result = await db.query( `UPDATE preventive_maintenance_tasks SET task_description = $1, frequency_days = $2, next_due_date = $3 WHERE id = $4 AND company_id = $5 RETURNING *`, [taskDescription, frequencyDays, next_due_date, id, companyId] ); if (result.rows.length === 0) { return res.status(404).json({ message: 'Task not found.' }); } const finalResult = await db.query( `SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.id = $1`, [id] ); res.json({ message: 'Task updated successfully!', task: finalResult.rows[0] }); } catch (error) { console.error('Error updating preventive maintenance task:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.delete('/preventive-maintenance/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { companyId } = req.user; const result = await db.query('DELETE FROM preventive_maintenance_tasks WHERE id = $1 AND company_id = $2', [id, companyId]); if (result.rowCount === 0) { return res.status(404).json({ message: 'Task not found.' }); } res.status(200).json({ message: 'Task deleted successfully.' }); } catch (error) { console.error('Error deleting preventive maintenance task:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.post('/preventive-maintenance/:id/complete', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { id } = req.params; const { companyId } = req.user; const taskRes = await db.query('SELECT frequency_days FROM preventive_maintenance_tasks WHERE id = $1 AND company_id = $2', [id, companyId]); if (taskRes.rows.length === 0) { return res.status(404).json({ message: 'Task not found.' }); } const { frequency_days } = taskRes.rows[0]; const query = ` UPDATE preventive_maintenance_tasks SET last_performed_at = NOW(), next_due_date = (NOW() + ($1 * INTERVAL '1 day'))::DATE WHERE id = $2 AND company_id = $3 RETURNING * `; const result = await db.query(query, [frequency_days, id, companyId]); const updatedTaskQuery = ` SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.id = $1 `; const finalResult = await db.query(updatedTaskQuery, [id]); res.json({ message: 'Task marked as complete!', task: finalResult.rows[0] }); } catch (error) { console.error('Error completing task:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
 // --- SERVER STARTUP ---
 app.listen(PORT, () => {

@@ -33,13 +33,12 @@ function PreventiveMaintenance() {
         ]);
         setTasks(tasksResponse.data);
         setMachines(machinesResponse.data);
-      } catch (err) { setError('Failed to fetch data.'); } 
+      } catch (err) { setError('Failed to fetch data.'); console.error(err); } 
       finally { setLoading(false); }
     };
     fetchData();
   }, []);
 
-  // --- Dialog and Form Handlers ---
   const handleOpenAddDialog = () => {
     setEditingTask(null);
     setFormData({ machineId: '', taskDescription: '', frequencyDays: 30, startDate: new Date().toISOString().split('T')[0] });
@@ -48,11 +47,20 @@ function PreventiveMaintenance() {
 
   const handleOpenEditDialog = (task) => {
     setEditingTask(task);
-    setFormData({ machineId: task.machine_id, taskDescription: task.task_description, frequencyDays: task.frequency_days, next_due_date: new Date(task.next_due_date).toISOString().split('T')[0] });
+    setFormData({ 
+      machineId: task.machine_id, 
+      taskDescription: task.task_description, 
+      frequencyDays: task.frequency_days, 
+      next_due_date: new Date(task.next_due_date).toISOString().split('T')[0] 
+    });
     setOpen(true);
   };
   
-  const handleClose = () => setOpen(false);
+  const handleClose = () => {
+    setOpen(false);
+    setEditingTask(null);
+  };
+  
   const handleInputChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
 
   const handleSubmit = async () => {
@@ -68,11 +76,9 @@ function PreventiveMaintenance() {
     } catch (err) { setError(err.response?.data?.message || 'An error occurred.'); }
   };
   
-  // NEW: Function to handle completing a task
   const handleCompleteTask = async (taskId) => {
     try {
       const response = await api.post(`/preventive-maintenance/${taskId}/complete`);
-      // Replace the old task with the updated one from the API response
       setTasks(currentTasks => 
         currentTasks.map(task => task.id === taskId ? response.data.task : task)
                     .sort((a, b) => new Date(a.next_due_date) - new Date(b.next_due_date))
@@ -82,7 +88,7 @@ function PreventiveMaintenance() {
       console.error(err);
     }
   };
-
+  
   const handleDeleteClick = (task) => { setTaskToDelete(task); setConfirmOpen(true); };
   const handleConfirmClose = () => { setConfirmOpen(false); setTaskToDelete(null); };
   const handleConfirmDelete = async () => {
@@ -103,7 +109,6 @@ function PreventiveMaintenance() {
         )}
       </Box>
 
-      {/* Add/Edit Dialog */}
       <Dialog open={open} onClose={handleClose}>
         <DialogTitle>{editingTask ? 'Edit Task' : 'Schedule a New Task'}</DialogTitle>
         <DialogContent>
@@ -127,7 +132,6 @@ function PreventiveMaintenance() {
         </DialogActions>
       </Dialog>
       
-      {/* Delete Confirmation Dialog */}
       <Dialog open={confirmOpen} onClose={handleConfirmClose}>
         <DialogTitle>Confirm Deletion</DialogTitle>
         <DialogContent><DialogContentText>Are you sure you want to delete this scheduled task?</DialogContentText></DialogContent>

@@ -38,6 +38,7 @@ function PreventiveMaintenance() {
   const handleOpenEditDialog = (task) => { setEditingTask(task); setFormData({ machineId: task.machine_id, taskDescription: task.task_description, frequencyDays: task.frequency_days, next_due_date: new Date(task.next_due_date).toISOString().split('T')[0] }); setOpen(true); };
   const handleClose = () => { setOpen(false); setEditingTask(null); };
   const handleInputChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
+
   const handleSubmit = async () => {
     try {
       if (editingTask) {
@@ -50,6 +51,7 @@ function PreventiveMaintenance() {
       handleClose();
     } catch (err) { setError(err.response?.data?.message || 'An error occurred.'); }
   };
+  
   const handleCompleteTask = async (taskId) => {
     try {
       const response = await api.post(`/preventive-maintenance/${taskId}/complete`);
@@ -59,6 +61,7 @@ function PreventiveMaintenance() {
       );
     } catch (err) { setError('Failed to complete task.'); console.error(err); }
   };
+  
   const handleDeleteClick = (task) => { setTaskToDelete(task); setConfirmOpen(true); };
   const handleConfirmClose = () => { setConfirmOpen(false); setTaskToDelete(null); };
   const handleConfirmDelete = async () => {
@@ -79,21 +82,37 @@ function PreventiveMaintenance() {
         )}
       </Box>
 
-      <Dialog open={open} onClose={handleClose}>{/*...Dialog content...*/}</Dialog>
-      <Dialog open={confirmOpen} onClose={handleConfirmClose}>{/*...Confirm Dialog content...*/}</Dialog>
+      <Dialog open={open} onClose={handleClose}>
+        <DialogTitle>{editingTask ? 'Edit Task' : 'Schedule a New Task'}</DialogTitle>
+        <DialogContent>
+          <FormControl fullWidth margin="dense">
+            <InputLabel>Machine</InputLabel>
+            <Select name="machineId" value={formData.machineId || ''} label="Machine" onChange={handleInputChange}>
+              {machines.map(m => <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>)}
+            </Select>
+          </FormControl>
+          <TextField margin="dense" name="taskDescription" label="Task Description" fullWidth value={formData.taskDescription || ''} onChange={handleInputChange} />
+          <TextField margin="dense" name="frequencyDays" label="Frequency (in days)" type="number" fullWidth value={formData.frequencyDays || ''} onChange={handleInputChange} />
+          {editingTask ? (
+            <TextField margin="dense" name="next_due_date" label="Next Due Date" type="date" fullWidth value={formData.next_due_date || ''} onChange={handleInputChange} InputLabelProps={{ shrink: true }} />
+          ) : (
+            <TextField margin="dense" name="startDate" label="First Due Date" type="date" fullWidth value={formData.startDate || ''} onChange={handleInputChange} InputLabelProps={{ shrink: true }} />
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleClose}>Cancel</Button>
+          <Button onClick={handleSubmit}>{editingTask ? 'Save Changes' : 'Create'}</Button>
+        </DialogActions>
+      </Dialog>
+      
+      <Dialog open={confirmOpen} onClose={handleConfirmClose}>{/*...confirm dialog jsx...*/}</Dialog>
 
       {loading && <CircularProgress />}
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
-      {!loading && tasks.map(task => (
+      {!loading && !error && tasks.map(task => (
         <Card key={task.id} sx={{ mb: 2 }}>
-          <CardContent>
-             <Typography variant="h6">{task.task_description}</Typography>
-            <Typography color="text.secondary">Machine: {task.machine_name}</Typography>
-            <Typography variant="body2" sx={{ mt: 1 }}>Frequency: Every {task.frequency_days} days</Typography>
-            <Typography variant="body2">Next Due: <strong>{new Date(task.next_due_date).toLocaleDateString()}</strong></Typography>
-            {task.last_performed_at && (<Typography variant="caption" color="text.secondary">Last Performed: {new Date(task.last_performed_at).toLocaleDateString()}</Typography>)}
-          </CardContent>
+          <CardContent>{/*...card content jsx...*/}</CardContent>
           <CardActions>
             {user && user.role === 'Maintenance Manager' && (
               <>

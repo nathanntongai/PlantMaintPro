@@ -141,5 +141,5 @@ app.post('/preventive-maintenance/:id/complete', authenticateToken, authorize(MA
 
 // --- SERVER STARTUP ---
 app.listen(PORT, () => {
-  console.log(`Server is running successfully on http://localhost:${PORT}`);
+  console.log(`>>>> BACKEND SERVER VERSION 2.0 IS RUNNING SUCCESSFULLY ON PORT ${PORT} <<<<`);
 });

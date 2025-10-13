@@ -1,6 +1,6 @@
-// src/pages/MachineManagement.jsx
 import React, { useState, useEffect } from 'react';
 import api from '../api';
+import { useAuth } from '../context/AuthContext';
 import { 
   Container, Typography, Card, CardContent, CircularProgress, Alert, Button, Box, IconButton,
   Dialog, DialogTitle, DialogContent, DialogActions, TextField, DialogContentText
@@ -11,14 +11,15 @@ import EditIcon from '@mui/icons-material/Edit';
 const initialFormState = { name: '', location: '' };
 
 function MachineManagement() {
+  const { user } = useAuth(); // Get current user for role check
   const [machines, setMachines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-
+  
   const [open, setOpen] = useState(false);
   const [formData, setFormData] = useState(initialFormState);
   const [editingMachine, setEditingMachine] = useState(null);
-
+  
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [machineToDelete, setMachineToDelete] = useState(null);
 
@@ -49,7 +50,7 @@ function MachineManagement() {
       handleClose();
     } catch (err) { setError(err.response?.data?.message || 'An error occurred.'); }
   };
-
+  
   const handleDeleteClick = (machine) => { setMachineToDelete(machine); setConfirmOpen(true); };
   const handleConfirmClose = () => { setConfirmOpen(false); setMachineToDelete(null); };
   const handleConfirmDelete = async () => {
@@ -65,9 +66,11 @@ function MachineManagement() {
     <Container maxWidth="lg">
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
         <Typography variant="h4" component="h1" gutterBottom>Machine Management</Typography>
-        <Button variant="contained" onClick={handleOpenAddDialog}>Add New Machine</Button>
+        {user && user.role === 'Maintenance Manager' && (
+          <Button variant="contained" onClick={handleOpenAddDialog}>Add New Machine</Button>
+        )}
       </Box>
-
+      
       <Dialog open={open} onClose={handleClose}>
         <DialogTitle>{editingMachine ? 'Edit Machine' : 'Add a New Machine'}</DialogTitle>
         <DialogContent>
@@ -76,7 +79,7 @@ function MachineManagement() {
         </DialogContent>
         <DialogActions><Button onClick={handleClose}>Cancel</Button><Button onClick={handleSubmit}>{editingMachine ? 'Save Changes' : 'Create Machine'}</Button></DialogActions>
       </Dialog>
-
+      
       <Dialog open={confirmOpen} onClose={handleConfirmClose}>
         <DialogTitle>Confirm Deletion</DialogTitle>
         <DialogContent><DialogContentText>Are you sure you want to delete the machine "{machineToDelete?.name}"?</DialogContentText></DialogContent>
@@ -85,7 +88,7 @@ function MachineManagement() {
 
       {loading && <CircularProgress />}
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
-
+      
       {!loading && machines.map(machine => (
         <Card key={machine.id} sx={{ mb: 2 }}>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -93,10 +96,12 @@ function MachineManagement() {
               <Typography variant="h6">{machine.name}</Typography>
               <Typography color="text.secondary">{machine.location}</Typography>
             </CardContent>
-            <Box sx={{ pr: 2 }}>
-              <IconButton onClick={() => handleOpenEditDialog(machine)} color="primary"><EditIcon /></IconButton>
-              <IconButton onClick={() => handleDeleteClick(machine)} color="error"><DeleteIcon /></IconButton>
-            </Box>
+            {user && user.role === 'Maintenance Manager' && (
+              <Box sx={{ pr: 2 }}>
+                <IconButton onClick={() => handleOpenEditDialog(machine)} color="primary"><EditIcon /></IconButton>
+                <IconButton onClick={() => handleDeleteClick(machine)} color="error"><DeleteIcon /></IconButton>
+              </Box>
+            )}
           </Box>
         </Card>
       ))}

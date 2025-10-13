@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash VARCHAR(255) NOT NULL, -- We will store a hashed password, not the plain text
     role VARCHAR(50) NOT NULL, -- e.g., 'Operator', 'Supervisor', 'Maintenance Technician' [cite: 55, 58, 60, 63]
     phone_number VARCHAR(50) UNIQUE,
+    whatsapp_state VARCHAR(50) DEFAULT 'IDLE',
+    whatsapp_context JSONB,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 

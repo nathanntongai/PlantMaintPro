@@ -144,6 +144,7 @@ app.post('/whatsapp', async (req, res) => {
     }
 
     twiml.message(responseMessage);
+    console.log("DEBUG: Sending this TwiML response back to Twilio:", twiml.toString());
     res.writeHead(200, { 'Content-Type': 'text/xml' });
     res.end(twiml.toString());
     console.log("--- Request finished. ---");

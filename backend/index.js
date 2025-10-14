@@ -18,7 +18,7 @@ app.use(cors());
 app.get('/', (req, res) => { res.send('Your PlantMaint Pro server is running!'); });
 
 // --- WHATSAPP WEBHOOK ---
-aapp.post('/whatsapp', async (req, res) => {
+app.post('/whatsapp', async (req, res) => {
     const twiml = new twilio.twiml.MessagingResponse();
     let responseMessage = "Sorry, an error occurred. Please try again later.";
 

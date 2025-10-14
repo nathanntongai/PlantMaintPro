@@ -29,71 +29,168 @@ app.get('/', (req, res) => { res.send('Your PlantMaint Pro server is running!');
 
 // In backend/index.js, replace the entire app.post('/whatsapp', ...) function
 
+// backend/index.js (Updated WhatsApp Webhook)
+
 app.post('/whatsapp', async (req, res) => {
-    const twiml = new twilio.twiml.MessagingResponse();
-    let responseMessage = "Sorry, an error occurred. Please try again later.";
+  const twiml = new twilio.twiml.MessagingResponse();
+  let responseMessage = "Sorry, an error occurred. Please try again later.";
 
-    try {
-        const from = req.body.From;
-        const msg_body = req.body.Body.trim().toLowerCase(); // Convert to lowercase immediately
-        console.log(`Incoming Twilio message from ${from}: "${msg_body}"`);
+  try {
+    const from = req.body.From;
+    const msg_body = req.body.Body.trim().toLowerCase();
+    console.log(`Incoming message from ${from}: "${msg_body}"`);
 
-        const userResult = await db.query('SELECT * FROM users WHERE phone_number = $1', [from]);
-        if (userResult.rows.length === 0) {
-            responseMessage = "Sorry, your phone number is not registered in the PlantMaint Pro system.";
-        } else {
-            const user = userResult.rows[0];
-            const currentState = user.whatsapp_state || 'IDLE';
-            let context = user.whatsapp_context || {};
-            
-            const reset_words = ['hi', 'hello', 'menu', 'cancel', 'start'];
+    const userResult = await db.query('SELECT * FROM users WHERE phone_number = $1', [from]);
+    if (userResult.rows.length === 0) {
+      responseMessage = "Your number is not registered in the PlantMaint Pro system.";
+    } else {
+      const user = userResult.rows[0];
+      let state = user.whatsapp_state || 'IDLE';
+      let context = user.whatsapp_context ? user.whatsapp_context : {};
+      const resetWords = ['hi', 'hello', 'menu', 'start', 'cancel'];
 
-            // If the user sends a reset word, OR if they are idle, start a new conversation.
-            if (reset_words.includes(msg_body) || currentState === 'IDLE') {
-                console.log("Starting new conversation.");
-                responseMessage = "Please choose an option:\n1. Report Breakdown\n2. Check Status";
-                await db.query("UPDATE users SET whatsapp_state = 'AWAITING_MENU_CHOICE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+      if (resetWords.includes(msg_body) || state === 'IDLE') {
+        responseMessage = "Welcome to PlantMaint Pro!\nPlease choose an option:\n1. Report Breakdown\n2. Check Breakdown Status\n3. Report Breakdown Completion";
+        await db.query("UPDATE users SET whatsapp_state = 'AWAITING_MENU_CHOICE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+      } else {
+        switch (state) {
+          case 'AWAITING_MENU_CHOICE':
+            if (msg_body === '1') {
+              const machines = await db.query('SELECT id, name FROM machines WHERE company_id = $1 ORDER BY name ASC', [user.company_id]);
+              if (machines.rows.length === 0) {
+                responseMessage = "No machines registered.";
+                state = 'IDLE';
+              } else {
+                let list = "Select machine:\n";
+                machines.rows.forEach((m, i) => list += `${i + 1}. ${m.name}\n`);
+                context.machineIdMap = machines.rows.map(m => m.id);
+                state = 'AWAITING_MACHINE_CHOICE_FOR_REPORT';
+                responseMessage = list;
+              }
+            } else if (msg_body === '2') {
+              const machines = await db.query('SELECT id, name FROM machines WHERE company_id = $1 ORDER BY name ASC', [user.company_id]);
+              if (machines.rows.length === 0) {
+                responseMessage = "No machines registered.";
+                state = 'IDLE';
+              } else {
+                let list = "Select machine to check status:\n";
+                machines.rows.forEach((m, i) => list += `${i + 1}. ${m.name}\n`);
+                context.machineIdMap = machines.rows.map(m => m.id);
+                state = 'AWAITING_MACHINE_CHOICE_FOR_STATUS';
+                responseMessage = list;
+              }
+            } else if (msg_body === '3') {
+              const machines = await db.query(`SELECT DISTINCT m.id, m.name 
+                FROM breakdowns b 
+                JOIN machines m ON b.machine_id = m.id 
+                WHERE b.company_id = $1 AND b.status IN ('Under Repair','Pending Completion')`, [user.company_id]);
+              if (machines.rows.length === 0) {
+                responseMessage = "No machines currently pending completion.";
+                state = 'IDLE';
+              } else {
+                let list = "Select machine to mark as completed:\n";
+                machines.rows.forEach((m, i) => list += `${i + 1}. ${m.name}\n`);
+                context.machineIdMap = machines.rows.map(m => m.id);
+                state = 'AWAITING_MACHINE_CHOICE_FOR_COMPLETION';
+                responseMessage = list;
+              }
             } else {
-                // Otherwise, continue with the existing conversation state
-                switch (currentState) {
-                    case 'AWAITING_MENU_CHOICE':
-                        // ... (This and all other cases remain exactly the same as before)
-                        if (msg_body === '1') {
-                            const machinesResult = await db.query('SELECT id, name FROM machines WHERE company_id = $1 ORDER BY name ASC', [user.company_id]);
-                            if (machinesResult.rows.length === 0) {
-                                responseMessage = "No machines are registered.";
-                                await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
-                            } else {
-                                let machineList = "Please reply with the number for the machine that has broken down:\n";
-                                const machineIdMap = machinesResult.rows.map(m => m.id);
-                                machinesResult.rows.forEach((machine, index) => { machineList += `${index + 1}. ${machine.name}\n`; });
-                                responseMessage = machineList;
-                                context.machine_id_map = machineIdMap;
-                                await db.query("UPDATE users SET whatsapp_state = 'AWAITING_MACHINE_CHOICE', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
-                            }
-                        } else if (msg_body === '2') {
-                            responseMessage = "Please reply with the Breakdown ID number to check its status.";
-                            await db.query("UPDATE users SET whatsapp_state = 'AWAITING_STATUS_ID' WHERE id = $1", [user.id]);
-                        } else {
-                            responseMessage = "Invalid option. Please choose:\n1. Report Breakdown\n2. Check Status";
-                        }
-                        break;
-                    
-                    case 'AWAITING_MACHINE_CHOICE':
-                         // ... same logic as before ...
-                        break;
-                    // ... etc. for all other cases
-                }
+              responseMessage = "Invalid choice. Please reply:\n1. Report Breakdown\n2. Check Breakdown Status\n3. Report Breakdown Completion";
             }
-        }
-    } catch (error) {
-        console.error("Error processing Twilio message:", error);
-    }
+            break;
 
-    twiml.message(responseMessage);
-    res.writeHead(200, { 'Content-Type': 'text/xml' });
-    res.end(twiml.toString());
+          case 'AWAITING_MACHINE_CHOICE_FOR_REPORT':
+            const machineIndex = parseInt(msg_body) - 1;
+            if (isNaN(machineIndex) || !context.machineIdMap[machineIndex]) {
+              responseMessage = "Invalid machine selection. Please try again.";
+            } else {
+              context.machineId = context.machineIdMap[machineIndex];
+              responseMessage = "Select issue type:\n1. Electrical\n2. Mechanical";
+              state = 'AWAITING_ISSUE_TYPE';
+            }
+            break;
+
+          case 'AWAITING_ISSUE_TYPE':
+            if (msg_body === '1' || msg_body === '2') {
+              context.issueType = msg_body === '1' ? 'Electrical' : 'Mechanical';
+              responseMessage = "Please describe the issue briefly.";
+              state = 'AWAITING_DESCRIPTION';
+            } else {
+              responseMessage = "Invalid option. Please reply 1 for Electrical or 2 for Mechanical.";
+            }
+            break;
+
+          case 'AWAITING_DESCRIPTION':
+            context.description = req.body.Body.trim();
+            await db.query(
+              'INSERT INTO breakdowns (machine_id, company_id, reported_by_id, description, issue_type) VALUES ($1, $2, $3, $4, $5)',
+              [context.machineId, user.company_id, user.id, context.description, context.issueType]
+            );
+            responseMessage = "✅ Breakdown reported successfully! Thank you.";
+            state = 'IDLE';
+            context = {};
+            break;
+
+          case 'AWAITING_MACHINE_CHOICE_FOR_STATUS':
+            const statusIdx = parseInt(msg_body) - 1;
+            if (isNaN(statusIdx) || !context.machineIdMap[statusIdx]) {
+              responseMessage = "Invalid machine selection.";
+            } else {
+              const machineId = context.machineIdMap[statusIdx];
+              const status = await db.query(
+                'SELECT id, status, updated_at, assigned_to_id FROM breakdowns WHERE machine_id = $1 ORDER BY reported_at DESC LIMIT 1',
+                [machineId]
+              );
+              if (status.rows.length === 0) {
+                responseMessage = "No breakdown reports found for this machine.";
+              } else {
+                const s = status.rows[0];
+                responseMessage = `Latest breakdown status: ${s.status}\nLast updated: ${s.updated_at}`;
+              }
+              state = 'IDLE';
+              context = {};
+            }
+            break;
+
+          case 'AWAITING_MACHINE_CHOICE_FOR_COMPLETION':
+            const compIdx = parseInt(msg_body) - 1;
+            if (isNaN(compIdx) || !context.machineIdMap[compIdx]) {
+              responseMessage = "Invalid machine selection.";
+            } else {
+              context.machineId = context.machineIdMap[compIdx];
+              responseMessage = "Please confirm completion by sending a short remark.";
+              state = 'AWAITING_COMPLETION_CONFIRM';
+            }
+            break;
+
+          case 'AWAITING_COMPLETION_CONFIRM':
+            await db.query(
+              `UPDATE breakdowns SET status = 'Completed', completion_remark = $1, completed_at = NOW() 
+               WHERE machine_id = $2 AND company_id = $3 AND status IN ('Under Repair','Pending Completion')`,
+              [req.body.Body.trim(), context.machineId, user.company_id]
+            );
+            responseMessage = "✅ Breakdown marked as completed. Thank you!";
+            state = 'IDLE';
+            context = {};
+            break;
+
+          default:
+            responseMessage = "Let's start over. Reply 'menu' to begin.";
+            state = 'IDLE';
+            context = {};
+        }
+        await db.query('UPDATE users SET whatsapp_state = $1, whatsapp_context = $2 WHERE id = $3', [state, context, user.id]);
+      }
+    }
+  } catch (err) {
+    console.error("Error in WhatsApp webhook:", err);
+  }
+
+  twiml.message(responseMessage);
+  res.writeHead(200, { 'Content-Type': 'text/xml' });
+  res.end(twiml.toString());
 });
+
 // --- AUTH ENDPOINTS ---
 app.post('/register', async (req, res) => {
     try {

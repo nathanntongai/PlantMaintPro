@@ -90,3 +90,15 @@ CREATE TABLE IF NOT EXISTS preventive_maintenance_tasks (
     next_due_date DATE NOT NULL, -- When the task is next scheduled to be done
     last_performed_at TIMESTAMP WITH TIME ZONE -- The last time the task was completed
 );
+
+-- Add this to the end of backend/database.sql
+
+CREATE TABLE IF NOT EXISTS notification_logs (
+    id SERIAL PRIMARY KEY,
+    breakdown_id INTEGER REFERENCES breakdowns(id),
+    recipient_id INTEGER REFERENCES users(id),
+    recipient_phone_number VARCHAR(50) NOT NULL,
+    message_body TEXT,
+    delivery_status VARCHAR(20) NOT NULL, -- e.g., 'sent', 'failed'
+    sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);

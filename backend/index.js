@@ -18,19 +18,24 @@ app.use(cors());
 app.get('/', (req, res) => { res.send('Your PlantMaint Pro server is running!'); });
 
 // --- WHATSAPP WEBHOOK ---
-app.post('/whatsapp', async (req, res) => {
+aapp.post('/whatsapp', async (req, res) => {
     const twiml = new twilio.twiml.MessagingResponse();
-    let responseMessage = "Sorry, an error occurred. Please try again later. Send 'cancel' to restart.";
+    let responseMessage = "Sorry, an error occurred. Please try again later.";
 
     try {
         const from = req.body.From;
         const msg_body = req.body.Body.trim().toLowerCase();
-        console.log(`\n--- Incoming message from ${from}: "${msg_body}"`);
-
+        console.log(`--- Incoming message from ${from}: "${msg_body}"`);
+        
+        console.log("DEBUG: About to query the database for user...");
         const userResult = await db.query('SELECT * FROM users WHERE phone_number = $1', [from]);
+        console.log("DEBUG: Database query for user finished successfully.");
+
         if (userResult.rows.length === 0) {
+            console.log("DEBUG: User not found in database.");
             responseMessage = "Sorry, your phone number is not registered in the system.";
         } else {
+            console.log("DEBUG: User found. Proceeding with conversation logic.");
             const user = userResult.rows[0];
             const currentState = user.whatsapp_state || 'IDLE';
             let context = user.whatsapp_context || {};

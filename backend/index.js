@@ -20,31 +20,33 @@ app.get('/', (req, res) => { res.send('Your PlantMaint Pro server is running!');
 // --- WHATSAPP WEBHOOK ---
 app.post('/whatsapp', async (req, res) => {
     const twiml = new twilio.twiml.MessagingResponse();
-    let responseMessage = "Sorry, an error occurred. Please try again later.";
+    let responseMessage = "Sorry, an error occurred. Please try again later. Send 'cancel' to restart.";
 
     try {
         const from = req.body.From;
         const msg_body = req.body.Body.trim().toLowerCase();
-        console.log(`--- Incoming message from ${from}: "${msg_body}"`);
-        
-        console.log("DEBUG: About to query the database for user...");
+        console.log(`\n--- Incoming message from ${from}: "${msg_body}"`);
+
+        console.log("DEBUG: About to query for user...");
         const userResult = await db.query('SELECT * FROM users WHERE phone_number = $1', [from]);
-        console.log("DEBUG: Database query for user finished successfully.");
+        console.log("DEBUG: User query finished.");
 
         if (userResult.rows.length === 0) {
-            console.log("DEBUG: User not found in database.");
             responseMessage = "Sorry, your phone number is not registered in the system.";
         } else {
-            console.log("DEBUG: User found. Proceeding with conversation logic.");
             const user = userResult.rows[0];
             const currentState = user.whatsapp_state || 'IDLE';
             let context = user.whatsapp_context || {};
             
+            console.log(`DEBUG: User found. Current state is: ${currentState}`);
+            
             const reset_words = ['hi', 'hello', 'menu', 'cancel', 'start'];
 
             if (reset_words.includes(msg_body) || currentState === 'IDLE') {
+                console.log("DEBUG: Resetting conversation to main menu.");
                 responseMessage = "Please choose an option:\n1. Report Breakdown\n2. Check Breakdown Status\n3. Report Breakdown Completion";
                 await db.query("UPDATE users SET whatsapp_state = 'AWAITING_MENU_CHOICE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                console.log("DEBUG: User state set to AWAITING_MENU_CHOICE.");
             } else {
                 switch (currentState) {
                     case 'AWAITING_MENU_CHOICE':
@@ -144,6 +146,8 @@ app.post('/whatsapp', async (req, res) => {
     twiml.message(responseMessage);
     res.writeHead(200, { 'Content-Type': 'text/xml' });
     res.end(twiml.toString());
+    console.log("--- Request finished. ---");
+
 });
 
 // --- AUTH ENDPOINTS ---

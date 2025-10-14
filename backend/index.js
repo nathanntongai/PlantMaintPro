@@ -27,10 +27,7 @@ app.post('/whatsapp', async (req, res) => {
         const msg_body = req.body.Body.trim().toLowerCase();
         console.log(`\n--- Incoming message from ${from}: "${msg_body}"`);
 
-        console.log("DEBUG: About to query for user...");
         const userResult = await db.query('SELECT * FROM users WHERE phone_number = $1', [from]);
-        console.log("DEBUG: User query finished.");
-
         if (userResult.rows.length === 0) {
             responseMessage = "Sorry, your phone number is not registered in the system.";
         } else {
@@ -38,15 +35,11 @@ app.post('/whatsapp', async (req, res) => {
             const currentState = user.whatsapp_state || 'IDLE';
             let context = user.whatsapp_context || {};
             
-            console.log(`DEBUG: User found. Current state is: ${currentState}`);
-            
             const reset_words = ['hi', 'hello', 'menu', 'cancel', 'start'];
 
             if (reset_words.includes(msg_body) || currentState === 'IDLE') {
-                console.log("DEBUG: Resetting conversation to main menu.");
                 responseMessage = "Please choose an option:\n1. Report Breakdown\n2. Check Breakdown Status\n3. Report Breakdown Completion";
                 await db.query("UPDATE users SET whatsapp_state = 'AWAITING_MENU_CHOICE', whatsapp_context = NULL WHERE id = $1", [user.id]);
-                console.log("DEBUG: User state set to AWAITING_MENU_CHOICE.");
             } else {
                 switch (currentState) {
                     case 'AWAITING_MENU_CHOICE':
@@ -77,8 +70,17 @@ app.post('/whatsapp', async (req, res) => {
                                 await db.query("UPDATE users SET whatsapp_state = 'AWAITING_STATUS_MACHINE_CHOICE', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
                             }
                         } else if (msg_body === '3') { // Report Breakdown Completion
-                            responseMessage = "This feature is coming soon!";
-                            await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                            const openBreakdowns = await db.query(`SELECT b.id, m.name as machine_name FROM breakdowns b JOIN machines m ON b.machine_id = m.id WHERE b.company_id = $1 AND b.status = 'In Progress'`, [user.company_id]);
+                            if (openBreakdowns.rows.length === 0) {
+                                responseMessage = "There are no breakdowns currently 'In Progress' to complete.";
+                                await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                            } else {
+                                let breakdownList = "Which breakdown did you complete? Please reply with the number.\n";
+                                context.completion_map = openBreakdowns.rows.map(b => b.id);
+                                openBreakdowns.rows.forEach((b, i) => { breakdownList += `${i + 1}. ID #${b.id} (${b.machine_name})\n`; });
+                                responseMessage = breakdownList;
+                                await db.query("UPDATE users SET whatsapp_state = 'AWAITING_COMPLETION_CHOICE', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
+                            }
                         } else {
                             responseMessage = "Invalid option. Please choose from the menu.";
                         }
@@ -131,6 +133,30 @@ app.post('/whatsapp', async (req, res) => {
                             responseMessage = "Invalid machine number. Please try again.";
                         }
                         break;
+                    
+                    case 'AWAITING_COMPLETION_CHOICE':
+                        const completionChoiceIndex = parseInt(msg_body, 10) - 1;
+                        if (context.completion_map && completionChoiceIndex >= 0 && completionChoiceIndex < context.completion_map.length) {
+                            context.breakdown_to_complete = context.completion_map[completionChoiceIndex];
+                            await db.query("UPDATE users SET whatsapp_state = 'AWAITING_COMPLETION_REMARK', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
+                            responseMessage = "Please provide a brief completion remark (e.g., 'Replaced faulty bearing').";
+                        } else {
+                            responseMessage = "Invalid selection. Please try again.";
+                        }
+                        break;
+
+                    case 'AWAITING_COMPLETION_REMARK':
+                        const breakdownIdToComplete = context.breakdown_to_complete;
+                        const remark = req.body.Body.trim();
+
+                        await db.query(`UPDATE breakdowns SET status = 'Resolved', description = description || '\n\nCompletion Remark by ${user.name}: ${remark}', resolved_at = NOW() WHERE id = $1`, [breakdownIdToComplete]);
+                        
+                        // In a real app, you would add the full notification logic here
+                        console.log(`LOG: Breakdown ${breakdownIdToComplete} was completed. Notifications would be sent now.`);
+
+                        responseMessage = `Thank you. Breakdown #${breakdownIdToComplete} has been marked as resolved.`;
+                        await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                        break;
 
                     default:
                         responseMessage = "Sorry, I got confused. Let's start over. Send 'hi' to begin.";
@@ -144,16 +170,39 @@ app.post('/whatsapp', async (req, res) => {
     }
 
     twiml.message(responseMessage);
-    console.log("DEBUG: Sending this TwiML response back to Twilio:", twiml.toString());
     res.writeHead(200, { 'Content-Type': 'text/xml' });
     res.end(twiml.toString());
-    console.log("--- Request finished. ---");
-
 });
 
 // --- AUTH ENDPOINTS ---
-app.post('/register', async (req, res) => { try { const { companyName, userName, email, password, phoneNumber } = req.body; const passwordHash = await bcrypt.hash(password, 10); const companyResult = await db.query('INSERT INTO companies (name) VALUES ($1) RETURNING id', [companyName]); const newCompanyId = companyResult.rows[0].id; const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null; const userResult = await db.query(`INSERT INTO users (company_id, name, email, password_hash, role, phone_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role`, [newCompanyId, userName, email, passwordHash, 'Maintenance Manager', formattedPhoneNumber]); res.status(201).json({ message: 'Registration successful!', user: userResult.rows[0] }); } catch (error) { if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); } console.error('Registration error:', error); res.status(500).json({ message: 'Internal server error' }); } });
-app.post('/login', async (req, res) => { try { const { email, password } = req.body; const query = `SELECT u.*, c.name as company_name FROM users u JOIN companies c ON u.company_id = c.id WHERE u.email = $1`; const result = await db.query(query, [email]); const user = result.rows[0]; const passwordMatches = user ? await bcrypt.compare(password, user.password_hash) : false; if (!passwordMatches) { return res.status(401).json({ message: 'Invalid credentials' }); } const token = jwt.sign({ userId: user.id, role: user.role, companyId: user.company_id }, process.env.JWT_SECRET, { expiresIn: '8h' }); delete user.password_hash; res.json({ message: 'Login successful!', token: token, user: user }); } catch (error) { console.error('Login error:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.post('/register', async (req, res) => {
+    try {
+        const { companyName, userName, email, password, phoneNumber } = req.body;
+        const passwordHash = await bcrypt.hash(password, 10);
+        const companyResult = await db.query('INSERT INTO companies (name) VALUES ($1) RETURNING id', [companyName]);
+        const newCompanyId = companyResult.rows[0].id;
+        const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null;
+        const userResult = await db.query(`INSERT INTO users (company_id, name, email, password_hash, role, phone_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role`, [newCompanyId, userName, email, passwordHash, 'Maintenance Manager', formattedPhoneNumber]);
+        res.status(201).json({ message: 'Registration successful!', user: userResult.rows[0] });
+    } catch (error) {
+        if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); }
+        console.error('Registration error:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+app.post('/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const query = `SELECT u.*, c.name as company_name FROM users u JOIN companies c ON u.company_id = c.id WHERE u.email = $1`;
+        const result = await db.query(query, [email]);
+        const user = result.rows[0];
+        const passwordMatches = user ? await bcrypt.compare(password, user.password_hash) : false;
+        if (!passwordMatches) { return res.status(401).json({ message: 'Invalid credentials' }); }
+        const token = jwt.sign({ userId: user.id, role: user.role, companyId: user.company_id }, process.env.JWT_SECRET, { expiresIn: '8h' });
+        delete user.password_hash;
+        res.json({ message: 'Login successful!', token: token, user: user });
+    } catch (error) { console.error('Login error:', error); res.status(500).json({ message: 'Internal server error' }); }
+});
 
 // --- PROTECTED API ENDPOINTS ---
 const ALL_ROLES = ['Maintenance Manager', 'Supervisor', 'Maintenance Technician', 'Operator'];

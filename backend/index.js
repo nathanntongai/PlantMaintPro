@@ -1,20 +1,21 @@
+// backend/index.js (Complete Version with Role-Specific Menus)
+
 const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const db = require('./db');
 const cors = require('cors');
 const twilio = require('twilio');
-const cron = require('node-cron'); // Ensure node-cron is installed (npm install node-cron)
+const cron = require('node-cron');
 const { authenticateToken, authorize } = require('./middleware/authMiddleware');
-const { sendBulkWhatsAppMessages } = require('./whatsappService');
+const { sendBulkWhatsAppMessages } = require('./whatsappService'); // Assuming this exists for notifications
 
 const app = express();
 const PORT = 4000;
 
-// Middleware Setup
-app.use(express.urlencoded({ extended: false })); // For Twilio webhooks
-app.use(express.json()); // For API requests
-app.use(cors()); // For allowing frontend access
+app.use(express.urlencoded({ extended: false }));
+app.use(express.json());
+app.use(cors());
 
 // --- HELPER & BACKGROUND JOBS ---
 
@@ -28,10 +29,7 @@ async function sendBreakdownNotification(breakdownId, companyId) {
              JOIN users u ON b.reported_by_id = u.id
              WHERE b.id = $1`, [breakdownId]
         );
-        if (breakdownInfo.rows.length === 0) {
-            console.error(`Breakdown info not found for ID: ${breakdownId}`);
-            return;
-        }
+        if (breakdownInfo.rows.length === 0) return;
         const { machine_name, description, reporter_name } = breakdownInfo.rows[0];
 
         const supervisors = await db.query(
@@ -91,13 +89,15 @@ app.post('/whatsapp', async (req, res) => {
             const user = userResult.rows[0];
             const currentState = user.whatsapp_state || 'IDLE';
             let context = user.whatsapp_context || {};
-            const userRole = user.role;
+            const userRole = user.role; // Get the user's role
 
             const reset_words = ['hi', 'hello', 'menu', 'cancel', 'start'];
 
             if (reset_words.includes(msg_body) || currentState === 'IDLE') {
+                // --- ROLE-SPECIFIC MENU LOGIC ---
                 let menuOptions = {};
                 responseMessage = `Welcome ${user.name}. Please choose an option:\n`;
+                context = {}; // Reset context for new menu
 
                 if (userRole === 'Operator') {
                     menuOptions = { '1': { text: 'Report Breakdown', nextState: 'AWAITING_MACHINE_CHOICE_BREAKDOWN' }, '2': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '3': { text: 'Report Breakdown Completion', nextState: 'AWAITING_COMPLETION_CHOICE' } };
@@ -111,7 +111,7 @@ app.post('/whatsapp', async (req, res) => {
                 } else if (userRole === 'Maintenance Manager') {
                      menuOptions = { '1': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '2': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' }, '3': { text: 'Create Job Order', nextState: 'AWAITING_JOB_ORDER_MACHINE' }, '4': { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' }, '5': { text: 'Check KPIs', nextState: 'KPI_REPORT' } };
                      responseMessage += "1. Check Breakdown Status\n2. Check Job Order Status\n3. Create Job Order\n4. Check PM Activities\n5. Check KPIs";
-                } else { // Default or 'Other Managers'
+                } else { // Default or 'Other Managers' (assuming 'Other Managers' maps to a specific role name or falls here)
                      menuOptions = { '1': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '2': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' }, '3': { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' }, '4': { text: 'Check KPIs', nextState: 'KPI_REPORT' } };
                     responseMessage += "1. Check Breakdown Status\n2. Check Job Order Status\n3. Check PM Activities\n4. Check KPIs";
                 }
@@ -142,11 +142,10 @@ app.post('/whatsapp', async (req, res) => {
                                     await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
                                 }
                             }
-                            // --- Add logic here for other menu options ---
                             else if (selectedOption.nextState === 'AWAITING_COMPLETION_CHOICE') {
                                 const openBreakdowns = await db.query(`SELECT b.id, m.name as machine_name FROM breakdowns b JOIN machines m ON b.machine_id = m.id WHERE b.company_id = $1 AND b.status = 'In Progress'`, [user.company_id]);
                                 if (openBreakdowns.rows.length === 0) {
-                                    responseMessage = "There are no breakdowns 'In Progress'.";
+                                    responseMessage = "There are no breakdowns currently 'In Progress'.";
                                     await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
                                 } else {
                                     let breakdownList = "Which breakdown did you complete?\n";
@@ -161,7 +160,7 @@ app.post('/whatsapp', async (req, res) => {
                                  responseMessage = `You selected "${selectedOption.text}". This feature is under development.`;
                                  await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
                             }
-                            else { // Should not happen if menu is defined correctly
+                            else { 
                                 responseMessage = `Selected state "${selectedOption.nextState}" is not handled yet.`;
                                 await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
                             }
@@ -173,7 +172,7 @@ app.post('/whatsapp', async (req, res) => {
                         }
                         break;
 
-                    case 'AWAITING_MACHINE_CHOICE_BREAKDOWN': // Renamed state
+                    case 'AWAITING_MACHINE_CHOICE_BREAKDOWN': // Note the renamed state
                         const breakdownChoiceIndex = parseInt(msg_body, 10) - 1;
                         if (context.machine_id_map && breakdownChoiceIndex >= 0 && breakdownChoiceIndex < context.machine_id_map.length) {
                             context.selected_machine_id = context.machine_id_map[breakdownChoiceIndex];
@@ -264,6 +263,7 @@ app.post('/whatsapp', async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/xml' });
     res.end(twiml.toString());
 });
+
 
 // --- AUTH ENDPOINTS ---
 app.post('/register', async (req, res) => { try { const { companyName, userName, email, password, phoneNumber } = req.body; const passwordHash = await bcrypt.hash(password, 10); const companyResult = await db.query('INSERT INTO companies (name) VALUES ($1) RETURNING id', [companyName]); const newCompanyId = companyResult.rows[0].id; const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null; const userResult = await db.query(`INSERT INTO users (company_id, name, email, password_hash, role, phone_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role`, [newCompanyId, userName, email, passwordHash, 'Maintenance Manager', formattedPhoneNumber]); res.status(201).json({ message: 'Registration successful!', user: userResult.rows[0] }); } catch (error) { if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); } console.error('Registration error:', error); res.status(500).json({ message: 'Internal server error' }); } });

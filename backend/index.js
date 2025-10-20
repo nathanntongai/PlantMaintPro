@@ -89,15 +89,14 @@ app.post('/whatsapp', async (req, res) => {
             const user = userResult.rows[0];
             const currentState = user.whatsapp_state || 'IDLE';
             let context = user.whatsapp_context || {};
-            const userRole = user.role; // Get the user's role
+            const userRole = user.role;
 
             const reset_words = ['hi', 'hello', 'menu', 'cancel', 'start'];
 
             if (reset_words.includes(msg_body) || currentState === 'IDLE') {
-                // --- ROLE-SPECIFIC MENU LOGIC ---
                 let menuOptions = {};
                 responseMessage = `Welcome ${user.name}. Please choose an option:\n`;
-                context = {}; // Reset context for new menu
+                context = {}; // Reset context
 
                 if (userRole === 'Operator') {
                     menuOptions = { '1': { text: 'Report Breakdown', nextState: 'AWAITING_MACHINE_CHOICE_BREAKDOWN' }, '2': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '3': { text: 'Report Breakdown Completion', nextState: 'AWAITING_COMPLETION_CHOICE' } };
@@ -111,7 +110,7 @@ app.post('/whatsapp', async (req, res) => {
                 } else if (userRole === 'Maintenance Manager') {
                      menuOptions = { '1': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '2': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' }, '3': { text: 'Create Job Order', nextState: 'AWAITING_JOB_ORDER_MACHINE' }, '4': { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' }, '5': { text: 'Check KPIs', nextState: 'KPI_REPORT' } };
                      responseMessage += "1. Check Breakdown Status\n2. Check Job Order Status\n3. Create Job Order\n4. Check PM Activities\n5. Check KPIs";
-                } else { // Default or 'Other Managers' (assuming 'Other Managers' maps to a specific role name or falls here)
+                } else { // Default or 'Other Managers'
                      menuOptions = { '1': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '2': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' }, '3': { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' }, '4': { text: 'Check KPIs', nextState: 'KPI_REPORT' } };
                     responseMessage += "1. Check Breakdown Status\n2. Check Job Order Status\n3. Check PM Activities\n4. Check KPIs";
                 }
@@ -155,8 +154,12 @@ app.post('/whatsapp', async (req, res) => {
                                     await db.query("UPDATE users SET whatsapp_state = 'AWAITING_COMPLETION_CHOICE', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
                                 }
                             }
+                            else if (selectedOption.nextState === 'AWAITING_JOB_ORDER_ID_STATUS') {
+                                responseMessage = "Please reply with the Job Order ID number to check its status.";
+                                await db.query("UPDATE users SET whatsapp_state = 'AWAITING_JOB_ORDER_ID_STATUS', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
+                            }
                             // Placeholder for features not yet built
-                            else if (['AWAITING_JOB_ORDER_ID_STATUS', 'PM_ACTIVITIES_LIST', 'KPI_REPORT', 'AWAITING_PM_COMPLETION_CHOICE'].includes(selectedOption.nextState)) {
+                            else if (['PM_ACTIVITIES_LIST', 'KPI_REPORT', 'AWAITING_PM_COMPLETION_CHOICE'].includes(selectedOption.nextState)) {
                                  responseMessage = `You selected "${selectedOption.text}". This feature is under development.`;
                                  await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
                             }
@@ -170,9 +173,9 @@ app.post('/whatsapp', async (req, res) => {
                                 Object.entries(context.current_menu).forEach(([key, value]) => { responseMessage += `${key}. ${value.text}\n`; });
                              }
                         }
-                        break;
+                        break; // End of AWAITING_MENU_CHOICE
 
-                    case 'AWAITING_MACHINE_CHOICE_BREAKDOWN': // Note the renamed state
+                    case 'AWAITING_MACHINE_CHOICE_BREAKDOWN':
                         const breakdownChoiceIndex = parseInt(msg_body, 10) - 1;
                         if (context.machine_id_map && breakdownChoiceIndex >= 0 && breakdownChoiceIndex < context.machine_id_map.length) {
                             context.selected_machine_id = context.machine_id_map[breakdownChoiceIndex];
@@ -224,7 +227,7 @@ app.post('/whatsapp', async (req, res) => {
                         }
                         break;
 
-                     case 'AWAITING_COMPLETION_CHOICE':
+                    case 'AWAITING_COMPLETION_CHOICE':
                         const completionChoiceIndex = parseInt(msg_body, 10) - 1;
                         if (context.completion_map && completionChoiceIndex >= 0 && completionChoiceIndex < context.completion_map.length) {
                             context.breakdown_to_complete = context.completion_map[completionChoiceIndex];
@@ -246,6 +249,22 @@ app.post('/whatsapp', async (req, res) => {
 
                         responseMessage = `Thank you. Breakdown #${breakdownIdToComplete} has been marked as resolved.`;
                         await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                        break;
+
+                     case 'AWAITING_JOB_ORDER_ID_STATUS':
+                        const jobOrderId = parseInt(msg_body, 10);
+                        if (!jobOrderId) {
+                            responseMessage = "Invalid ID. Please reply with the Job Order ID number.";
+                        } else {
+                            const jobOrderResult = await db.query(`SELECT jo.status, m.name as machine_name FROM job_orders jo JOIN machines m ON jo.machine_id = m.id WHERE jo.id = $1 AND jo.company_id = $2`, [jobOrderId, user.company_id]);
+                            if (jobOrderResult.rows.length === 0) {
+                                responseMessage = `Error: Job Order with ID ${jobOrderId} was not found.`;
+                            } else {
+                                const jo = jobOrderResult.rows[0];
+                                responseMessage = `ℹ️ Status for Job Order #${jobOrderId} (${jo.machine_name}) is: *${jo.status}*`;
+                            }
+                            await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                        }
                         break;
 
                     default:
@@ -291,53 +310,6 @@ app.get('/breakdowns', authenticateToken, authorize(ALL_ROLES), async (req, res)
 app.post('/breakdowns', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { machineId, description } = req.body; const { userId, companyId } = req.user; const result = await db.query('INSERT INTO breakdowns (machine_id, company_id, reported_by_id, description) VALUES ($1, $2, $3, $4) RETURNING *', [machineId, companyId, userId, description]); const newBreakdown = result.rows[0]; sendBreakdownNotification(newBreakdown.id, companyId); res.status(201).json({ message: 'Breakdown reported!', breakdown: newBreakdown }); } catch (error) { console.error('Error reporting breakdown:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.patch('/breakdowns/:id/status', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { id } = req.params; const { status } = req.body; const { companyId } = req.user; const result = await db.query( "UPDATE breakdowns SET status = $1 WHERE id = $2 AND company_id = $3 RETURNING *", [status, id, companyId] ); if (result.rows.length === 0) { return res.status(404).json({ message: 'Breakdown not found.' }); } res.json({ message: 'Status updated!', breakdown: result.rows[0] }); } catch (error) { console.error('Error updating status:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
-// Job Order Management
-app.get('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => {
-    try {
-        const { companyId } = req.user;
-        const query = `
-            SELECT jo.*, m.name as machine_name, u_req.name as requested_by_name
-            FROM job_orders jo
-            JOIN machines m ON jo.machine_id = m.id
-            JOIN users u_req ON jo.requested_by_id = u_req.id
-            WHERE jo.company_id = $1
-            ORDER BY jo.requested_at DESC
-        `;
-        const result = await db.query(query, [companyId]);
-        res.json(result.rows);
-    } catch (error) {
-        console.error('Error fetching job orders:', error);
-        res.status(500).json({ message: 'Internal server error' });
-    }
-});
-
-app.post('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => {
-    try {
-        const { machineId, description } = req.body;
-        const { userId, companyId } = req.user; // User requesting the job order
-
-        // Add validation if needed (e.g., check if machine exists for the company)
-        const machineCheck = await db.query('SELECT id FROM machines WHERE id = $1 AND company_id = $2', [machineId, companyId]);
-        if (machineCheck.rows.length === 0) {
-            return res.status(404).json({ message: 'Machine not found.' });
-        }
-
-        const result = await db.query(
-            `INSERT INTO job_orders (machine_id, company_id, requested_by_id, description)
-             VALUES ($1, $2, $3, $4)
-             RETURNING *`,
-            [machineId, companyId, userId, description]
-        );
-        
-        // You can add notification logic here later if needed
-
-        res.status(201).json({ message: 'Job Order created!', jobOrder: result.rows[0] });
-    } catch (error) {
-        console.error('Error creating job order:', error);
-        res.status(500).json({ message: 'Internal server error' });
-    }
-});
-
 // Utility Management
 app.get('/utilities', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT * FROM utilities WHERE company_id = $1', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching utilities:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/utilities', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { name, unit } = req.body; const { companyId } = req.user; const result = await db.query('INSERT INTO utilities (company_id, name, unit) VALUES ($1, $2, $3) RETURNING *', [companyId, name, unit]); res.status(201).json({ message: 'Utility created!', utility: result.rows[0] }); } catch (error) { console.error('Error creating utility:', error); res.status(500).json({ message: 'Internal server error' }); } });
@@ -348,6 +320,10 @@ app.get('/utilities/:utilityId/readings', authenticateToken, authorize(MANAGER_A
 app.get('/dashboard/kpis', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const activeBreakdownsQuery = "SELECT COUNT(*) FROM breakdowns WHERE company_id = $1 AND status NOT IN ('Resolved', 'Closed')"; const activeBreakdownsResult = await db.query(activeBreakdownsQuery, [companyId]); const machinesNeedingAttentionQuery = "SELECT COUNT(DISTINCT machine_id) FROM breakdowns WHERE company_id = $1 AND status NOT IN ('Resolved', 'Closed')"; const machinesNeedingAttentionResult = await db.query(machinesNeedingAttentionQuery, [companyId]); const kpis = { activeBreakdowns: parseInt(activeBreakdownsResult.rows[0].count, 10), machinesNeedingAttention: parseInt(machinesNeedingAttentionResult.rows[0].count, 10), }; res.json(kpis); } catch (error) { console.error('Error fetching KPIs:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.get('/charts/utility-consumption', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const { utilityId, days } = req.query; const query = ` SELECT DATE_TRUNC('day', recorded_at AT TIME ZONE 'UTC') AS date, SUM(reading_value) AS "totalConsumption" FROM utility_readings WHERE utility_id = $1 AND company_id = $2 AND recorded_at >= NOW() - ($3 * INTERVAL '1 day') GROUP BY date ORDER BY date ASC `; const result = await db.query(query, [utilityId, companyId, days]); res.json(result.rows); } catch (error) { console.error('Error fetching chart data:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
+// Job Order Management
+app.get('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = `SELECT jo.*, m.name as machine_name, u_req.name as requested_by_name FROM job_orders jo JOIN machines m ON jo.machine_id = m.id JOIN users u_req ON jo.requested_by_id = u_req.id WHERE jo.company_id = $1 ORDER BY jo.requested_at DESC`; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching job orders:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.post('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { machineId, description } = req.body; const { userId, companyId } = req.user; const machineCheck = await db.query('SELECT id FROM machines WHERE id = $1 AND company_id = $2', [machineId, companyId]); if (machineCheck.rows.length === 0) { return res.status(404).json({ message: 'Machine not found.' }); } const result = await db.query(`INSERT INTO job_orders (machine_id, company_id, requested_by_id, description) VALUES ($1, $2, $3, $4) RETURNING *`, [machineId, companyId, userId, description]); res.status(201).json({ message: 'Job Order created!', jobOrder: result.rows[0] }); } catch (error) { console.error('Error creating job order:', error); res.status(500).json({ message: 'Internal server error' }); } });
+
 // Preventive Maintenance
 app.get('/preventive-maintenance', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.company_id = $1 ORDER BY pmt.next_due_date ASC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching maintenance tasks:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/preventive-maintenance', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { machineId, taskDescription, frequencyDays, startDate } = req.body; const { companyId } = req.user; const nextDueDate = new Date(startDate); const result = await db.query(`INSERT INTO preventive_maintenance_tasks (machine_id, company_id, task_description, frequency_days, next_due_date) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [machineId, companyId, taskDescription, frequencyDays, nextDueDate]); res.status(201).json({ message: 'Task scheduled!', task: result.rows[0] }); } catch (error) { console.error('Error scheduling task:', error); res.status(500).json({ message: 'Internal server error' }); } });
@@ -357,5 +333,5 @@ app.post('/preventive-maintenance/:id/complete', authenticateToken, authorize(MA
 
 // --- SERVER STARTUP ---
 app.listen(PORT, () => {
-  console.log(`>>>> BACKEND SERVER VERSION 2.0 IS RUNNING SUCCESSFULLY ON PORT ${PORT} <<<<`);
+    console.log(`>>>> BACKEND SERVER VERSION 2.0 IS RUNNING SUCCESSFULLY ON PORT ${PORT} <<<<`);
 });

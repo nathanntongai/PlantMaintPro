@@ -1,24 +1,27 @@
--- database.sql
-
--- We use "CREATE TABLE IF NOT EXISTS" to prevent errors if we run the script multiple times.
+-- This function MUST be defined first, before the trigger uses it.
+CREATE OR REPLACE FUNCTION trigger_set_timestamp()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
 -- Table for Companies
--- Each company will have its own set of users, machines, etc.
 CREATE TABLE IF NOT EXISTS companies (
-    id SERIAL PRIMARY KEY, -- A unique, auto-incrementing ID for each company
-    name VARCHAR(100) NOT NULL, -- The name of the company
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- The date and time the record was created
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Table for Users
--- Stores login info and roles for all users in the system.
 CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY, -- A unique, auto-incrementing ID for each user
-    company_id INTEGER NOT NULL REFERENCES companies(id), -- Links the user to a company. This is a "foreign key".
+    id SERIAL PRIMARY KEY,
+    company_id INTEGER NOT NULL REFERENCES companies(id),
     name VARCHAR(100) NOT NULL,
-    email VARCHAR(100) UNIQUE NOT NULL, -- Email must be unique across all users
-    password_hash VARCHAR(255) NOT NULL, -- We will store a hashed password, not the plain text
-    role VARCHAR(50) NOT NULL, -- e.g., 'Operator', 'Supervisor', 'Maintenance Technician' [cite: 55, 58, 60, 63]
+    email VARCHAR(100) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    role VARCHAR(50) NOT NULL,
     phone_number VARCHAR(50) UNIQUE,
     whatsapp_state VARCHAR(50) DEFAULT 'IDLE',
     whatsapp_context JSONB,
@@ -26,18 +29,15 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 -- Table for Machines
--- Stores all the machinery for each company.
 CREATE TABLE IF NOT EXISTS machines (
-    id SERIAL PRIMARY KEY, -- A unique, auto-incrementing ID for each machine
-    company_id INTEGER NOT NULL REFERENCES companies(id), -- Links the machine to a company
-    name VARCHAR(100) NOT NULL, -- e.g., "Bottling Line 1"
-    location VARCHAR(100), -- e.g., "Hall A, Section 3"
+    id SERIAL PRIMARY KEY,
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    name VARCHAR(100) NOT NULL,
+    location VARCHAR(100),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- database.sql (add this to the end)
-
--- Create a custom type for breakdown status. This ensures data consistency.
+-- Create a custom type for breakdown status
 DO $$ BEGIN
     CREATE TYPE status_enum AS ENUM ('Reported', 'Acknowledged', 'In Progress', 'Resolved', 'Closed');
 EXCEPTION
@@ -45,23 +45,20 @@ EXCEPTION
 END $$;
 
 -- Table for Machine Breakdowns
--- This is the core table for tracking maintenance tickets.
 CREATE TABLE IF NOT EXISTS breakdowns (
     id SERIAL PRIMARY KEY,
     machine_id INTEGER NOT NULL REFERENCES machines(id),
     company_id INTEGER NOT NULL REFERENCES companies(id),
     reported_by_id INTEGER NOT NULL REFERENCES users(id),
-    assigned_to_id INTEGER REFERENCES users(id), -- Should be present
+    assigned_to_id INTEGER REFERENCES users(id), -- Tracks assigned technician
     description TEXT NOT NULL,
     status status_enum NOT NULL DEFAULT 'Reported',
     reported_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     resolved_at TIMESTAMP WITH TIME ZONE,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- Should be present
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- Tracks updates
 );
 
--- database.sql (add this to the end)
-
--- Table to define the types of utilities a company tracks (e.g., Power, Water)
+-- Table to define the types of utilities a company tracks
 CREATE TABLE IF NOT EXISTS utilities (
     id SERIAL PRIMARY KEY,
     company_id INTEGER NOT NULL REFERENCES companies(id),
@@ -76,35 +73,33 @@ CREATE TABLE IF NOT EXISTS utility_readings (
     utility_id INTEGER NOT NULL REFERENCES utilities(id),
     company_id INTEGER NOT NULL REFERENCES companies(id),
     recorded_by_id INTEGER NOT NULL REFERENCES users(id),
-    reading_value NUMERIC(10, 2) NOT NULL, -- The value from the meter
+    reading_value NUMERIC(10, 2) NOT NULL,
     recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
-
--- database.sql (add this to the end)
 
 -- Table for scheduled preventive maintenance tasks
 CREATE TABLE IF NOT EXISTS preventive_maintenance_tasks (
     id SERIAL PRIMARY KEY,
     machine_id INTEGER NOT NULL REFERENCES machines(id),
     company_id INTEGER NOT NULL REFERENCES companies(id),
-    task_description TEXT NOT NULL, -- e.g., "Check and replace air filter"
-    frequency_days INTEGER NOT NULL, -- How often the task repeats, in days
-    next_due_date DATE NOT NULL, -- When the task is next scheduled to be done
-    last_performed_at TIMESTAMP WITH TIME ZONE -- The last time the task was completed
+    task_description TEXT NOT NULL,
+    frequency_days INTEGER NOT NULL,
+    next_due_date DATE NOT NULL,
+    last_performed_at TIMESTAMP WITH TIME ZONE
 );
 
--- Add this to the end of backend/database.sql
-
+-- Table for logging notifications
 CREATE TABLE IF NOT EXISTS notification_logs (
     id SERIAL PRIMARY KEY,
     breakdown_id INTEGER REFERENCES breakdowns(id),
     recipient_id INTEGER REFERENCES users(id),
     recipient_phone_number VARCHAR(50) NOT NULL,
     message_body TEXT,
-    delivery_status VARCHAR(20) NOT NULL, -- e.g., 'sent', 'failed'
+    delivery_status VARCHAR(20) NOT NULL,
     sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- This trigger MUST come AFTER the function and the breakdowns table are defined
 DROP TRIGGER IF EXISTS set_timestamp ON breakdowns;
 CREATE TRIGGER set_timestamp
 BEFORE UPDATE ON breakdowns

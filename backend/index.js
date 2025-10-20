@@ -291,6 +291,53 @@ app.get('/breakdowns', authenticateToken, authorize(ALL_ROLES), async (req, res)
 app.post('/breakdowns', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { machineId, description } = req.body; const { userId, companyId } = req.user; const result = await db.query('INSERT INTO breakdowns (machine_id, company_id, reported_by_id, description) VALUES ($1, $2, $3, $4) RETURNING *', [machineId, companyId, userId, description]); const newBreakdown = result.rows[0]; sendBreakdownNotification(newBreakdown.id, companyId); res.status(201).json({ message: 'Breakdown reported!', breakdown: newBreakdown }); } catch (error) { console.error('Error reporting breakdown:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.patch('/breakdowns/:id/status', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { id } = req.params; const { status } = req.body; const { companyId } = req.user; const result = await db.query( "UPDATE breakdowns SET status = $1 WHERE id = $2 AND company_id = $3 RETURNING *", [status, id, companyId] ); if (result.rows.length === 0) { return res.status(404).json({ message: 'Breakdown not found.' }); } res.json({ message: 'Status updated!', breakdown: result.rows[0] }); } catch (error) { console.error('Error updating status:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
+// Job Order Management
+app.get('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => {
+    try {
+        const { companyId } = req.user;
+        const query = `
+            SELECT jo.*, m.name as machine_name, u_req.name as requested_by_name
+            FROM job_orders jo
+            JOIN machines m ON jo.machine_id = m.id
+            JOIN users u_req ON jo.requested_by_id = u_req.id
+            WHERE jo.company_id = $1
+            ORDER BY jo.requested_at DESC
+        `;
+        const result = await db.query(query, [companyId]);
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Error fetching job orders:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+app.post('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => {
+    try {
+        const { machineId, description } = req.body;
+        const { userId, companyId } = req.user; // User requesting the job order
+
+        // Add validation if needed (e.g., check if machine exists for the company)
+        const machineCheck = await db.query('SELECT id FROM machines WHERE id = $1 AND company_id = $2', [machineId, companyId]);
+        if (machineCheck.rows.length === 0) {
+            return res.status(404).json({ message: 'Machine not found.' });
+        }
+
+        const result = await db.query(
+            `INSERT INTO job_orders (machine_id, company_id, requested_by_id, description)
+             VALUES ($1, $2, $3, $4)
+             RETURNING *`,
+            [machineId, companyId, userId, description]
+        );
+        
+        // You can add notification logic here later if needed
+
+        res.status(201).json({ message: 'Job Order created!', jobOrder: result.rows[0] });
+    } catch (error) {
+        console.error('Error creating job order:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
 // Utility Management
 app.get('/utilities', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT * FROM utilities WHERE company_id = $1', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching utilities:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/utilities', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { name, unit } = req.body; const { companyId } = req.user; const result = await db.query('INSERT INTO utilities (company_id, name, unit) VALUES ($1, $2, $3) RETURNING *', [companyId, name, unit]); res.status(201).json({ message: 'Utility created!', utility: result.rows[0] }); } catch (error) { console.error('Error creating utility:', error); res.status(500).json({ message: 'Internal server error' }); } });

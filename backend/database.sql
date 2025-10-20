@@ -38,25 +38,36 @@ CREATE TABLE IF NOT EXISTS machines (
 );
 
 -- Create a custom type for breakdown status
+-- UPDATED: Add 'Pending Approval' to the status list
 DO $$ BEGIN
-    CREATE TYPE status_enum AS ENUM ('Reported', 'Acknowledged', 'In Progress', 'Resolved', 'Closed');
+    -- Temporarily remove the default to allow altering the type
+    ALTER TABLE breakdowns ALTER COLUMN status DROP DEFAULT;
+    -- Add the new value if it doesn't exist
+    ALTER TYPE status_enum ADD VALUE IF NOT EXISTS 'Pending Approval';
 EXCEPTION
     WHEN duplicate_object THEN null;
+    WHEN undefined_object THEN
+       -- If the type doesn't exist at all, create it with all values
+       CREATE TYPE status_enum AS ENUM ('Pending Approval', 'Reported', 'Acknowledged', 'In Progress', 'Resolved', 'Closed');
 END $$;
 
--- Table for Machine Breakdowns
 CREATE TABLE IF NOT EXISTS breakdowns (
     id SERIAL PRIMARY KEY,
     machine_id INTEGER NOT NULL REFERENCES machines(id),
     company_id INTEGER NOT NULL REFERENCES companies(id),
     reported_by_id INTEGER NOT NULL REFERENCES users(id),
-    assigned_to_id INTEGER REFERENCES users(id), -- Tracks assigned technician
+    assigned_to_id INTEGER REFERENCES users(id),
+    approved_by_id INTEGER REFERENCES users(id), -- NEW: Tracks who approved
     description TEXT NOT NULL,
-    status status_enum NOT NULL DEFAULT 'Reported',
+    -- UPDATED: Default status is now Pending Approval
+    status status_enum NOT NULL DEFAULT 'Pending Approval',
     reported_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     resolved_at TIMESTAMP WITH TIME ZONE,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- Tracks updates
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Ensure the default is set (might be needed if table existed before type change)
+ALTER TABLE breakdowns ALTER COLUMN status SET DEFAULT 'Pending Approval';
 
 -- Table to define the types of utilities a company tracks
 CREATE TABLE IF NOT EXISTS utilities (
@@ -109,11 +120,8 @@ EXECUTE PROCEDURE trigger_set_timestamp();
 -- Add this to the end of backend/database.sql
 
 -- Create a custom type for job order status
-DO $$ BEGIN
-    CREATE TYPE job_order_status_enum AS ENUM ('Requested', 'Approved', 'Rejected', 'Assigned', 'In Progress', 'Completed', 'Closed');
-EXCEPTION
-    WHEN duplicate_object THEN null;
-END $$;
+DO $$ BEGIN CREATE TYPE job_order_status_enum AS ENUM ('Requested', 'Approved', 'Rejected', 'Assigned', 'In Progress', 'Completed', 'Closed'); EXCEPTION WHEN duplicate_object THEN null; END $$;
+ALTER TABLE job_orders ALTER COLUMN status SET DEFAULT 'Requested';
 
 -- Table for Job Orders (Improvement requests, non-breakdown tasks)
 CREATE TABLE IF NOT EXISTS job_orders (
@@ -132,8 +140,7 @@ CREATE TABLE IF NOT EXISTS job_orders (
 
 -- Optional: Add a trigger to automatically update the 'updated_at' timestamp
 -- This uses the same function we created for the breakdowns table.
+DROP TRIGGER IF EXISTS set_timestamp ON breakdowns;
+CREATE TRIGGER set_timestamp BEFORE UPDATE ON breakdowns FOR EACH ROW EXECUTE PROCEDURE trigger_set_timestamp();
 DROP TRIGGER IF EXISTS set_timestamp_job_orders ON job_orders;
-CREATE TRIGGER set_timestamp_job_orders
-BEFORE UPDATE ON job_orders
-FOR EACH ROW
-EXECUTE PROCEDURE trigger_set_timestamp();
+CREATE TRIGGER set_timestamp_job_orders BEFORE UPDATE ON job_orders FOR EACH ROW EXECUTE PROCEDURE trigger_set_timestamp();

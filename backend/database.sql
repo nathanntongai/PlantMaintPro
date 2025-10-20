@@ -51,10 +51,12 @@ CREATE TABLE IF NOT EXISTS breakdowns (
     machine_id INTEGER NOT NULL REFERENCES machines(id),
     company_id INTEGER NOT NULL REFERENCES companies(id),
     reported_by_id INTEGER NOT NULL REFERENCES users(id),
-    description TEXT NOT NULL, -- A description of the problem
-    status status_enum NOT NULL DEFAULT 'Reported', -- The current status of the repair
+    assigned_to_id INTEGER REFERENCES users(id), -- Should be present
+    description TEXT NOT NULL,
+    status status_enum NOT NULL DEFAULT 'Reported',
     reported_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    resolved_at TIMESTAMP WITH TIME ZONE -- Will be set when the issue is fixed
+    resolved_at TIMESTAMP WITH TIME ZONE,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- Should be present
 );
 
 -- database.sql (add this to the end)
@@ -102,3 +104,9 @@ CREATE TABLE IF NOT EXISTS notification_logs (
     delivery_status VARCHAR(20) NOT NULL, -- e.g., 'sent', 'failed'
     sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+DROP TRIGGER IF EXISTS set_timestamp ON breakdowns;
+CREATE TRIGGER set_timestamp
+BEFORE UPDATE ON breakdowns
+FOR EACH ROW
+EXECUTE PROCEDURE trigger_set_timestamp();

@@ -24,7 +24,7 @@ const runMigrations = async () => {
     await runSQLFile(path.join(__dirname, 'database.sql'));
     
     // Run the alteration script second
-    await runSQLFile(path.join(__dirname, 'alter_schema.sql'));
+    //await runSQLFile(path.join(__dirname, 'alter_schema.sql'));
 
     console.log('✅ Database migration completed successfully!');
   } catch (error) {

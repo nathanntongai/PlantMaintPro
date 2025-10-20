@@ -25,9 +25,9 @@ services:
       DB_PORT: 5432
       DB_DATABASE: postgres
       JWT_SECRET: ${JWT_SECRET}
-      META_VERIFY_TOKEN: ${META_VERIFY_TOKEN}
-      META_PHONE_NUMBER_ID: ${META_PHONE_NUMBER_ID}
-      META_ACCESS_TOKEN: ${META_ACCESS_TOKEN}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID} # Reads from Codespaces secret
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN} # Reads from Codespaces secret
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER} # Reads from Codespaces secret
 
   frontend:
     build: ./frontend

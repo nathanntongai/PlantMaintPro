@@ -29,14 +29,14 @@ function MainLayout({ children }) {
             <ListItemText primary="Equipment" />
           </ListItemButton>
         </ListItem>
-        <ListItem disablePadding>
-          {user && ['Maintenance Manager', 'Supervisor'].includes(user.role) && (
+        {user && ['Maintenance Manager', 'Supervisor'].includes(user.role) && (
   <ListItem disablePadding>
     <ListItemButton component={Link} to="/job-orders">
       <ListItemText primary="Job Orders" />
     </ListItemButton>
   </ListItem>
 )}
+        <ListItem disablePadding>
           <ListItemButton component={Link} to="/preventive-maintenance">
             <ListItemText primary="Preventive Maintenance" />
           </ListItemButton>

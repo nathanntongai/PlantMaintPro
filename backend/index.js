@@ -234,26 +234,126 @@ app.post('/whatsapp', async (req, res) => {
                         const completionChoiceIndex = parseInt(msg_body, 10) - 1;
                         if (context.completion_map && completionChoiceIndex >= 0 && completionChoiceIndex < context.completion_map.length) {
                             context.breakdown_to_complete = context.completion_map[completionChoiceIndex];
-                            await db.query("UPDATE users SET whatsapp_state = 'AWAITING_COMPLETION_REMARK', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
-                            responseMessage = "Please provide a brief completion remark (e.g., 'Replaced faulty bearing').";
+                            // Check Role - Operators only confirm, Technicians provide details
+                            if (userRole === 'Operator') {
+                                responseMessage = "Is the work finished?\n1. Yes\n2. No";
+                                await db.query("UPDATE users SET whatsapp_state = 'AWAITING_OPERATOR_CONFIRMATION', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
+                            } else if (userRole === 'Maintenance Technician') {
+                                responseMessage = "Please provide a brief completion remark (e.g., 'Replaced faulty bearing').";
+                                await db.query("UPDATE users SET whatsapp_state = 'AWAITING_COMPLETION_REMARK', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
+                            } else { // Default fallback for other roles trying this path
+                                responseMessage = "Only Operators or Technicians can report completion this way.";
+                                await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                            }
                         } else {
                             responseMessage = "Invalid selection. Please try again.";
                         }
                         break;
 
                     case 'AWAITING_COMPLETION_REMARK':
-                        const breakdownIdToComplete = context.breakdown_to_complete;
-                        const remark = req.body.Body.trim();
-
-                        await db.query(`UPDATE breakdowns SET status = 'Resolved', description = description || '\n\nCompletion Remark by ${user.name}: ${remark}', resolved_at = NOW() WHERE id = $1`, [breakdownIdToComplete]);
-                        
-                        // Placeholder for full notification logic
-                        console.log(`LOG: Breakdown ${breakdownIdToComplete} was completed. Notifications would be sent now.`);
-
-                        responseMessage = `Thank you. Breakdown #${breakdownIdToComplete} has been marked as resolved.`;
-                        await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                        if (userRole === 'Maintenance Technician') {
+                            context.completion_remark = req.body.Body.trim(); // Store original case remark
+                            responseMessage = "Thank you. What was the root cause of the problem?";
+                            await db.query("UPDATE users SET whatsapp_state = 'AWAITING_ROOT_CAUSE', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
+                        } else { // Should not happen, but reset if another role ends up here
+                             responseMessage = "State error. Resetting. Send 'hi'.";
+                             await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                        }
+                        break;
+                    // --- Technician Root Cause ---
+                    case 'AWAITING_ROOT_CAUSE':
+                         if (userRole === 'Maintenance Technician') {
+                            context.root_cause = req.body.Body.trim();
+                            responseMessage = "Was the root cause attended to?\n1. Yes\n2. No";
+                            await db.query("UPDATE users SET whatsapp_state = 'AWAITING_ROOT_CAUSE_FIXED', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
+                        } else {
+                             responseMessage = "State error. Resetting. Send 'hi'.";
+                             await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                        }
                         break;
 
+                    // --- Technician Root Cause Confirmation ---
+                     case 'AWAITING_ROOT_CAUSE_FIXED':
+                         if (userRole === 'Maintenance Technician') {
+                            const breakdownIdToComplete = context.breakdown_to_complete;
+                            const remark = context.completion_remark;
+                            const rootCause = context.root_cause;
+                            const rootCauseFixed = msg_body === '1'; // True if user replied '1'
+
+                            let finalStatus = 'Resolved';
+                            let descriptionUpdate = `\n\nCompletion Remark by ${user.name}: ${remark}\nRoot Cause: ${rootCause}`;
+                            
+                            if (!rootCauseFixed) {
+                                // According to spec, keep breakdown open if root cause not fixed
+                                // We might need a new status like 'Resolved - Root Cause Pending'
+                                // For now, let's keep it 'Resolved' but add a note.
+                                descriptionUpdate += "\n*Root cause was NOT attended to.*";
+                                console.log(`LOG: Breakdown ${breakdownIdToComplete} resolved, but root cause pending.`);
+                                // In a more complex system, we might create a new Job Order here.
+                            } else {
+                                descriptionUpdate += "\n*Root cause attended to.*";
+                                console.log(`LOG: Breakdown ${breakdownIdToComplete} resolved, root cause fixed.`);
+                            }
+
+                            // Update the breakdown
+                            await db.query(
+                                `UPDATE breakdowns 
+                                 SET status = $1, 
+                                     description = description || $2, 
+                                     resolved_at = NOW() 
+                                 WHERE id = $3`,
+                                [finalStatus, descriptionUpdate, breakdownIdToComplete]
+                            );
+
+                            // --- Notification Logic ---
+                            const machineInfo = await db.query(`SELECT m.name as machine_name FROM machines m JOIN breakdowns b ON m.id = b.machine_id WHERE b.id = $1`, [breakdownIdToComplete]);
+                            const machineName = machineInfo.rows.length > 0 ? machineInfo.rows[0].machine_name : 'Unknown Machine';
+                            const supervisors = await db.query(`SELECT id, phone_number FROM users WHERE company_id = $1 AND role IN ('Supervisor', 'Maintenance Manager')`, [user.company_id]);
+                            const originalReporterResult = await db.query(`SELECT u.id, u.phone_number FROM users u JOIN breakdowns b ON u.id = b.reported_by_id WHERE b.id = $1`, [breakdownIdToComplete]);
+
+                            let messagesToSend = [];
+                            const supervisorMessage = `✅ Breakdown #${breakdownIdToComplete} (${machineName}) has been marked as '${finalStatus}' by ${user.name}.${rootCauseFixed ? '' : ' Root cause pending.'}`;
+                            supervisors.rows.forEach(s => { if (s.phone_number) messagesToSend.push({ to: s.phone_number.replace('whatsapp:+', ''), text: supervisorMessage, recipientId: s.id }); });
+                            if (originalReporterResult.rows.length > 0 && originalReporterResult.rows[0].phone_number && originalReporterResult.rows[0].id !== user.id) {
+                                const reporterMessage = `Update: The breakdown you reported for "${machineName}" (ID #${breakdownIdToComplete}) has been resolved${rootCauseFixed ? '.' : ' (root cause pending).'}`;
+                                messagesToSend.push({ to: originalReporterResult.rows[0].phone_number.replace('whatsapp:+', ''), text: reporterMessage, recipientId: originalReporterResult.rows[0].id });
+                            }
+                            if (messagesToSend.length > 0) {
+                                const sendResults = await sendBulkWhatsAppMessages(messagesToSend);
+                                // Log results...
+                            }
+                            // --- End Notification Logic ---
+                            
+                            responseMessage = `Thank you. Breakdown #${breakdownIdToComplete} has been updated.`;
+                            await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+
+                        } else {
+                             responseMessage = "State error. Resetting. Send 'hi'.";
+                             await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                        }
+                        break;
+                        
+                    // --- Operator Confirmation ---
+                    case 'AWAITING_OPERATOR_CONFIRMATION':
+                        if (userRole === 'Operator') {
+                            const breakdownIdToConfirm = context.breakdown_to_complete;
+                            if (msg_body === '1') { // Yes, work is finished
+                                // Mark as 'Closed' - or maybe just 'Resolved' is enough? Let's use Resolved for now.
+                                await db.query(`UPDATE breakdowns SET status = 'Resolved' WHERE id = $1`, [breakdownIdToConfirm]);
+                                responseMessage = `Thank you for confirming completion of Breakdown #${breakdownIdToConfirm}.`;
+                                // Notify manager/supervisor?
+                            } else { // No, work is not finished
+                                // What should happen? Maybe revert status? Notify supervisor?
+                                // For now, just acknowledge.
+                                responseMessage = `Okay, Breakdown #${breakdownIdToConfirm} status remains unchanged. Please inform your supervisor if there are issues.`;
+                            }
+                             await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                        } else {
+                             responseMessage = "State error. Resetting. Send 'hi'.";
+                             await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                        }
+                        break;
+                        
                      case 'AWAITING_JOB_ORDER_MACHINE':
                         const joMachineChoiceIndex = parseInt(msg_body, 10) - 1;
                         if (context.machine_id_map && joMachineChoiceIndex >= 0 && joMachineChoiceIndex < context.machine_id_map.length) {

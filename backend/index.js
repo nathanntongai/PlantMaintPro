@@ -365,16 +365,32 @@ app.post('/whatsapp', async (req, res) => {
                         }
                         break;
 
+                    // --- NEW: Handle Job Order description and creation ---
                     case 'AWAITING_JOB_ORDER_DESCRIPTION':
-                        const joDescription = req.body.Body.trim(); // Use original case
+                        const joDescription = req.body.Body.trim(); // Use original case from message body
                         const joMachineId = context.selected_machine_id;
 
-                        const newJobOrder = await db.query(`INSERT INTO job_orders (machine_id, company_id, requested_by_id, description) VALUES ($1, $2, $3, $4) RETURNING id`, [joMachineId, user.company_id, user.id, joDescription]);
-                        const newJobOrderId = newJobOrder.rows[0].id;
+                        if (!joDescription) {
+                            responseMessage = "Description cannot be empty. Please provide a description.";
+                            // Keep user in the same state
+                        } else if (!joMachineId) {
+                            // Safety check in case context was lost
+                             responseMessage = "Machine selection lost. Please start over. Send 'cancel'.";
+                             await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                        }
+                        else {
+                            // Create the Job Order in the database
+                            const newJobOrder = await db.query(
+                                `INSERT INTO job_orders (machine_id, company_id, requested_by_id, description)
+                                 VALUES ($1, $2, $3, $4) RETURNING id`,
+                                [joMachineId, user.company_id, user.id, joDescription]
+                            );
+                            const newJobOrderId = newJobOrder.rows[0].id;
 
-                        responseMessage = `✅ Job Order #${newJobOrderId} requested successfully. It will be reviewed by management.`;
-                        await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
-                        // Add notification logic here later if needed (e.g., notify manager)
+                            responseMessage = `✅ Job Order #${newJobOrderId} requested successfully. It will be reviewed by management.`;
+                            await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                            // Add notification logic here later if needed (e.g., notify manager)
+                        }
                         break;
 
                     case 'AWAITING_JOB_ORDER_ID_STATUS':

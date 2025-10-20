@@ -18,8 +18,8 @@ app.use(cors()); // For allowing frontend access
 
 // --- HELPER & BACKGROUND JOBS ---
 
-async function sendBreakdownNotification(breakdownId, companyId) {
-    console.log(`Sending notifications for new breakdown #${breakdownId}`);
+async function sendBreakdownApprovalRequest(breakdownId, companyId) {
+    console.log(`Sending approval request for breakdown #${breakdownId}`);
     try {
         const breakdownInfo = await db.query(
             `SELECT b.id, b.description, m.name as machine_name, u.name as reporter_name

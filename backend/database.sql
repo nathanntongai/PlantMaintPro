@@ -1,4 +1,5 @@
--- This function MUST be defined first, before the trigger uses it.
+-- backend/database.sql (Corrected ENUM Handling)
+
 CREATE OR REPLACE FUNCTION trigger_set_timestamp()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -37,48 +38,54 @@ CREATE TABLE IF NOT EXISTS machines (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create a custom type for breakdown status
--- UPDATED: Add 'Pending Approval' to the status list
+-- Create or Add to the status enum type
 DO $$ BEGIN
-    -- Temporarily remove the default to allow altering the type
-    ALTER TABLE breakdowns ALTER COLUMN status DROP DEFAULT;
-    -- Add the new value if it doesn't exist
-    ALTER TYPE status_enum ADD VALUE IF NOT EXISTS 'Pending Approval';
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'status_enum') THEN
+        CREATE TYPE status_enum AS ENUM ('Pending Approval', 'Reported', 'Acknowledged', 'In Progress', 'Resolved', 'Closed');
+    ELSE
+        -- Add values individually to handle existing types
+        ALTER TYPE status_enum ADD VALUE IF NOT EXISTS 'Pending Approval' BEFORE 'Reported';
+        -- Add others if they might be missing from older versions
+        ALTER TYPE status_enum ADD VALUE IF NOT EXISTS 'Reported';
+        ALTER TYPE status_enum ADD VALUE IF NOT EXISTS 'Acknowledged';
+        ALTER TYPE status_enum ADD VALUE IF NOT EXISTS 'In Progress';
+        ALTER TYPE status_enum ADD VALUE IF NOT EXISTS 'Resolved';
+        ALTER TYPE status_enum ADD VALUE IF NOT EXISTS 'Closed';
+    END IF;
 EXCEPTION
-    WHEN duplicate_object THEN null;
-    WHEN undefined_object THEN
-       -- If the type doesn't exist at all, create it with all values
-       CREATE TYPE status_enum AS ENUM ('Pending Approval', 'Reported', 'Acknowledged', 'In Progress', 'Resolved', 'Closed');
+    WHEN duplicate_object THEN null; -- Ignore if type already exists
 END $$;
 
+-- Table for Machine Breakdowns
+-- Define with an OLD default first, we will change it later
 CREATE TABLE IF NOT EXISTS breakdowns (
     id SERIAL PRIMARY KEY,
     machine_id INTEGER NOT NULL REFERENCES machines(id),
     company_id INTEGER NOT NULL REFERENCES companies(id),
     reported_by_id INTEGER NOT NULL REFERENCES users(id),
     assigned_to_id INTEGER REFERENCES users(id),
-    approved_by_id INTEGER REFERENCES users(id), -- NEW: Tracks who approved
+    approved_by_id INTEGER REFERENCES users(id),
     description TEXT NOT NULL,
-    -- UPDATED: Default status is now Pending Approval
-    status status_enum NOT NULL DEFAULT 'Pending Approval',
+    status status_enum NOT NULL DEFAULT 'Reported', -- Use an existing value initially
     reported_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     resolved_at TIMESTAMP WITH TIME ZONE,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Ensure the default is set (might be needed if table existed before type change)
+-- NOW, set the correct default after the type has been potentially modified
 ALTER TABLE breakdowns ALTER COLUMN status SET DEFAULT 'Pending Approval';
 
--- Table to define the types of utilities a company tracks
+
+-- Table for Utilities
 CREATE TABLE IF NOT EXISTS utilities (
     id SERIAL PRIMARY KEY,
     company_id INTEGER NOT NULL REFERENCES companies(id),
-    name VARCHAR(100) NOT NULL, -- e.g., "Mains Power Meter"
-    unit VARCHAR(20) NOT NULL, -- e.g., "kWh", "m3", "liters"
+    name VARCHAR(100) NOT NULL,
+    unit VARCHAR(20) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Table to store the actual utility meter readings
+-- Table for Utility Readings
 CREATE TABLE IF NOT EXISTS utility_readings (
     id SERIAL PRIMARY KEY,
     utility_id INTEGER NOT NULL REFERENCES utilities(id),
@@ -88,7 +95,7 @@ CREATE TABLE IF NOT EXISTS utility_readings (
     recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Table for scheduled preventive maintenance tasks
+-- Table for Preventive Maintenance Tasks
 CREATE TABLE IF NOT EXISTS preventive_maintenance_tasks (
     id SERIAL PRIMARY KEY,
     machine_id INTEGER NOT NULL REFERENCES machines(id),
@@ -99,7 +106,29 @@ CREATE TABLE IF NOT EXISTS preventive_maintenance_tasks (
     last_performed_at TIMESTAMP WITH TIME ZONE
 );
 
--- Table for logging notifications
+-- Create or Add to the job order status enum type
+DO $$ BEGIN
+    CREATE TYPE job_order_status_enum AS ENUM ('Requested', 'Approved', 'Rejected', 'Assigned', 'In Progress', 'Completed', 'Closed');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- Table for Job Orders
+CREATE TABLE IF NOT EXISTS job_orders (
+    id SERIAL PRIMARY KEY,
+    machine_id INTEGER NOT NULL REFERENCES machines(id),
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    requested_by_id INTEGER NOT NULL REFERENCES users(id),
+    assigned_to_id INTEGER REFERENCES users(id),
+    description TEXT NOT NULL,
+    status job_order_status_enum NOT NULL DEFAULT 'Requested',
+    requested_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    approved_at TIMESTAMP WITH TIME ZONE,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table for Notification Logs
 CREATE TABLE IF NOT EXISTS notification_logs (
     id SERIAL PRIMARY KEY,
     breakdown_id INTEGER REFERENCES breakdowns(id),
@@ -110,37 +139,15 @@ CREATE TABLE IF NOT EXISTS notification_logs (
     sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- This trigger MUST come AFTER the function and the breakdowns table are defined
+-- Triggers (Must be at the very end)
 DROP TRIGGER IF EXISTS set_timestamp ON breakdowns;
 CREATE TRIGGER set_timestamp
 BEFORE UPDATE ON breakdowns
 FOR EACH ROW
 EXECUTE PROCEDURE trigger_set_timestamp();
 
--- Add this to the end of backend/database.sql
-
--- Create a custom type for job order status
-DO $$ BEGIN CREATE TYPE job_order_status_enum AS ENUM ('Requested', 'Approved', 'Rejected', 'Assigned', 'In Progress', 'Completed', 'Closed'); EXCEPTION WHEN duplicate_object THEN null; END $$;
-ALTER TABLE job_orders ALTER COLUMN status SET DEFAULT 'Requested';
-
--- Table for Job Orders (Improvement requests, non-breakdown tasks)
-CREATE TABLE IF NOT EXISTS job_orders (
-    id SERIAL PRIMARY KEY,
-    machine_id INTEGER NOT NULL REFERENCES machines(id),
-    company_id INTEGER NOT NULL REFERENCES companies(id),
-    requested_by_id INTEGER NOT NULL REFERENCES users(id),
-    assigned_to_id INTEGER REFERENCES users(id), -- Technician assigned
-    description TEXT NOT NULL, -- Description of work needed
-    status job_order_status_enum NOT NULL DEFAULT 'Requested',
-    requested_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    approved_at TIMESTAMP WITH TIME ZONE,
-    completed_at TIMESTAMP WITH TIME ZONE,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
--- Optional: Add a trigger to automatically update the 'updated_at' timestamp
--- This uses the same function we created for the breakdowns table.
-DROP TRIGGER IF EXISTS set_timestamp ON breakdowns;
-CREATE TRIGGER set_timestamp BEFORE UPDATE ON breakdowns FOR EACH ROW EXECUTE PROCEDURE trigger_set_timestamp();
 DROP TRIGGER IF EXISTS set_timestamp_job_orders ON job_orders;
-CREATE TRIGGER set_timestamp_job_orders BEFORE UPDATE ON job_orders FOR EACH ROW EXECUTE PROCEDURE trigger_set_timestamp();
+CREATE TRIGGER set_timestamp_job_orders
+BEFORE UPDATE ON job_orders
+FOR EACH ROW
+EXECUTE PROCEDURE trigger_set_timestamp();

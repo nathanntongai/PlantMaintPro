@@ -98,23 +98,17 @@ app.post('/whatsapp', async (req, res) => {
                 responseMessage = `Welcome ${user.name}. Please choose an option:\n`;
                 context = {}; // Reset context
 
-                if (userRole === 'Operator') {
-                    menuOptions = { '1': { text: 'Report Breakdown', nextState: 'AWAITING_MACHINE_CHOICE_BREAKDOWN' }, '2': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '3': { text: 'Report Breakdown Completion', nextState: 'AWAITING_COMPLETION_CHOICE' } };
-                    responseMessage += "1. Report Breakdown\n2. Check Breakdown Status\n3. Report Breakdown Completion";
-                } else if (userRole === 'Supervisor') {
+                // --- ROLE-SPECIFIC MENU LOGIC ---
+                if (userRole === 'Operator') { /* ... Operator Menu ... */ }
+                else if (userRole === 'Supervisor') {
+                    // Added AWAITING_JOB_ORDER_MACHINE
                     menuOptions = { '1': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '2': { text: 'Request Job Order', nextState: 'AWAITING_JOB_ORDER_MACHINE' }, '3': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' } };
                      responseMessage += "1. Check Breakdown Status\n2. Request Job Order\n3. Check Job Order Status";
-                } else if (userRole === 'Maintenance Technician') {
-                     menuOptions = { '1': { text: 'Report Breakdown Completion', nextState: 'AWAITING_COMPLETION_CHOICE' }, '2': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' }, '3': { text: 'Machine Inspection', nextState: 'AWAITING_INSPECTION_MACHINE' }, '4': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '5': { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' }, '6': { text: 'Report PM Completion', nextState: 'AWAITING_PM_COMPLETION_CHOICE' } };
-                     responseMessage += "1. Report Breakdown Completion\n2. Check Job Order Status\n3. Machine Inspection\n4. Check Breakdown Status\n5. Check PM Activities\n6. Report PM Completion";
-                } else if (userRole === 'Maintenance Manager') {
-                     menuOptions = { '1': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '2': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' }, '3': { text: 'Create Job Order', nextState: 'AWAITING_JOB_ORDER_MACHINE' }, '4': { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' }, '5': { text: 'Check KPIs', nextState: 'KPI_REPORT' } };
-                     responseMessage += "1. Check Breakdown Status\n2. Check Job Order Status\n3. Create Job Order\n4. Check PM Activities\n5. Check KPIs";
-                } else { // Default or 'Other Managers'
-                     menuOptions = { '1': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '2': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' }, '3': { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' }, '4': { text: 'Check KPIs', nextState: 'KPI_REPORT' } };
-                    responseMessage += "1. Check Breakdown Status\n2. Check Job Order Status\n3. Check PM Activities\n4. Check KPIs";
                 }
-                
+                else if (userRole === 'Maintenance Technician') { /* ... Technician Menu ... */ }
+                else if (userRole === 'Maintenance Manager') { /* ... Manager Menu ... */ }
+                else { /* ... Other Managers Menu ... */ }
+
                 context.current_menu = menuOptions;
                 await db.query("UPDATE users SET whatsapp_state = 'AWAITING_MENU_CHOICE', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
 
@@ -123,58 +117,56 @@ app.post('/whatsapp', async (req, res) => {
                     case 'AWAITING_MENU_CHOICE':
                         const selectedOption = context.current_menu?.[msg_body];
                         if (selectedOption) {
+                            // --- Logic to start the selected workflow ---
                             if (['AWAITING_MACHINE_CHOICE_BREAKDOWN', 'AWAITING_STATUS_MACHINE_CHOICE', 'AWAITING_JOB_ORDER_MACHINE', 'AWAITING_INSPECTION_MACHINE'].includes(selectedOption.nextState)) {
                                 const machinesResult = await db.query('SELECT id, name FROM machines WHERE company_id = $1 ORDER BY name ASC', [user.company_id]);
                                 if (machinesResult.rows.length > 0) {
                                     let machineList = "";
                                     if(selectedOption.nextState === 'AWAITING_MACHINE_CHOICE_BREAKDOWN') machineList = "Please reply with the number for the machine that has broken down:\n";
                                     else if (selectedOption.nextState === 'AWAITING_STATUS_MACHINE_CHOICE') machineList = "Please select a machine to check its status:\n";
-                                    else if (selectedOption.nextState === 'AWAITING_JOB_ORDER_MACHINE') machineList = "Please select a machine for the Job Order:\n";
+                                    else if (selectedOption.nextState === 'AWAITING_JOB_ORDER_MACHINE') machineList = "Please select a machine for the Job Order:\n"; // Message for Job Order
                                     else if (selectedOption.nextState === 'AWAITING_INSPECTION_MACHINE') machineList = "Please select a machine to inspect:\n";
 
                                     context.machine_id_map = machinesResult.rows.map(m => m.id);
                                     machinesResult.rows.forEach((m, i) => { machineList += `${i + 1}. ${m.name}\n`; });
                                     responseMessage = machineList;
                                     await db.query("UPDATE users SET whatsapp_state = $1, whatsapp_context = $2 WHERE id = $3", [selectedOption.nextState, context, user.id]);
-                                } else {
-                                    responseMessage = "No machines are registered.";
-                                    await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
-                                }
+                                } else { /* No machines found */ }
                             }
-                            else if (selectedOption.nextState === 'AWAITING_COMPLETION_CHOICE') {
-                                const openBreakdowns = await db.query(`SELECT b.id, m.name as machine_name FROM breakdowns b JOIN machines m ON b.machine_id = m.id WHERE b.company_id = $1 AND b.status = 'In Progress'`, [user.company_id]);
-                                if (openBreakdowns.rows.length === 0) {
-                                    responseMessage = "There are no breakdowns currently 'In Progress'.";
-                                    await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
-                                } else {
-                                    let breakdownList = "Which breakdown did you complete?\n";
-                                    context.completion_map = openBreakdowns.rows.map(b => b.id);
-                                    openBreakdowns.rows.forEach((b, i) => { breakdownList += `${i + 1}. ID #${b.id} (${b.machine_name})\n`; });
-                                    responseMessage = breakdownList;
-                                    await db.query("UPDATE users SET whatsapp_state = 'AWAITING_COMPLETION_CHOICE', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
-                                }
-                            }
-                            else if (selectedOption.nextState === 'AWAITING_JOB_ORDER_ID_STATUS') {
-                                responseMessage = "Please reply with the Job Order ID number to check its status.";
-                                await db.query("UPDATE users SET whatsapp_state = 'AWAITING_JOB_ORDER_ID_STATUS', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
-                            }
-                            // Placeholder for features not yet built
-                            else if (['PM_ACTIVITIES_LIST', 'KPI_REPORT', 'AWAITING_PM_COMPLETION_CHOICE'].includes(selectedOption.nextState)) {
-                                 responseMessage = `You selected "${selectedOption.text}". This feature is under development.`;
-                                 await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
-                            }
-                            else { 
-                                responseMessage = `Selected state "${selectedOption.nextState}" is not handled yet.`;
-                                await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
-                            }
-                        } else {
-                            responseMessage = "Invalid option. Please reply with a number from the menu.\n";
-                             if (context.current_menu) {
-                                Object.entries(context.current_menu).forEach(([key, value]) => { responseMessage += `${key}. ${value.text}\n`; });
-                             }
-                        }
+                            // ... (other menu option logic like completion, status ID) ...
+                        } else { /* Invalid menu option */ }
                         break; // End of AWAITING_MENU_CHOICE
 
+                    // --- NEW: Handle machine selection for Job Order ---
+                    case 'AWAITING_JOB_ORDER_MACHINE':
+                        const joMachineChoiceIndex = parseInt(msg_body, 10) - 1;
+                        if (context.machine_id_map && joMachineChoiceIndex >= 0 && joMachineChoiceIndex < context.machine_id_map.length) {
+                            context.selected_machine_id = context.machine_id_map[joMachineChoiceIndex];
+                            responseMessage = "Please provide a brief description of the work to be done for this Job Order.";
+                            await db.query("UPDATE users SET whatsapp_state = 'AWAITING_JOB_ORDER_DESCRIPTION', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
+                        } else {
+                            responseMessage = "Invalid machine number. Please try again.";
+                        }
+                        break;
+
+                    // --- NEW: Handle Job Order description and creation ---
+                    case 'AWAITING_JOB_ORDER_DESCRIPTION':
+                        const joDescription = req.body.Body.trim(); // Use original case
+                        const joMachineId = context.selected_machine_id;
+
+                        // Create the Job Order in the database
+                        const newJobOrder = await db.query(
+                            `INSERT INTO job_orders (machine_id, company_id, requested_by_id, description)
+                             VALUES ($1, $2, $3, $4) RETURNING id`,
+                            [joMachineId, user.company_id, user.id, joDescription]
+                        );
+                        const newJobOrderId = newJobOrder.rows[0].id;
+
+                        responseMessage = `✅ Job Order #${newJobOrderId} requested successfully. It will be reviewed by management.`;
+                        await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                        // Add notification logic here later if needed (e.g., notify manager)
+                        break;
+                        
                     case 'AWAITING_MACHINE_CHOICE_BREAKDOWN':
                         const breakdownChoiceIndex = parseInt(msg_body, 10) - 1;
                         if (context.machine_id_map && breakdownChoiceIndex >= 0 && breakdownChoiceIndex < context.machine_id_map.length) {

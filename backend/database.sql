@@ -105,3 +105,35 @@ CREATE TRIGGER set_timestamp
 BEFORE UPDATE ON breakdowns
 FOR EACH ROW
 EXECUTE PROCEDURE trigger_set_timestamp();
+
+-- Add this to the end of backend/database.sql
+
+-- Create a custom type for job order status
+DO $$ BEGIN
+    CREATE TYPE job_order_status_enum AS ENUM ('Requested', 'Approved', 'Rejected', 'Assigned', 'In Progress', 'Completed', 'Closed');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- Table for Job Orders (Improvement requests, non-breakdown tasks)
+CREATE TABLE IF NOT EXISTS job_orders (
+    id SERIAL PRIMARY KEY,
+    machine_id INTEGER NOT NULL REFERENCES machines(id),
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    requested_by_id INTEGER NOT NULL REFERENCES users(id),
+    assigned_to_id INTEGER REFERENCES users(id), -- Technician assigned
+    description TEXT NOT NULL, -- Description of work needed
+    status job_order_status_enum NOT NULL DEFAULT 'Requested',
+    requested_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    approved_at TIMESTAMP WITH TIME ZONE,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Optional: Add a trigger to automatically update the 'updated_at' timestamp
+-- This uses the same function we created for the breakdowns table.
+DROP TRIGGER IF EXISTS set_timestamp_job_orders ON job_orders;
+CREATE TRIGGER set_timestamp_job_orders
+BEFORE UPDATE ON job_orders
+FOR EACH ROW
+EXECUTE PROCEDURE trigger_set_timestamp();

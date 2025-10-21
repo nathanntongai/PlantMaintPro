@@ -1,3 +1,5 @@
+// src/pages/PreventiveMaintenance.jsx (Complete and Functional)
+
 import React, { useState, useEffect } from 'react';
 import api from '../api';
 import { useAuth } from '../context/AuthContext';
@@ -14,29 +16,63 @@ function PreventiveMaintenance() {
   const [machines, setMachines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+  // State for the main form dialog (Add/Edit)
   const [open, setOpen] = useState(false);
   const [formData, setFormData] = useState({});
   const [editingTask, setEditingTask] = useState(null);
+  
+  // State for the delete confirmation dialog
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState(null);
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [tasksResponse, machinesResponse] = await Promise.all([
-          api.get('/preventive-maintenance'), api.get('/machines')
-        ]);
-        setTasks(tasksResponse.data);
-        setMachines(machinesResponse.data);
-      } catch (err) { setError('Failed to fetch data.'); console.error(err); } 
-      finally { setLoading(false); }
-    };
-    fetchData();
-  }, []);
+    // Only fetch data if user has permission to view the page
+    if (user && ['Maintenance Manager', 'Supervisor'].includes(user.role)) {
+        const fetchData = async () => {
+          setLoading(true);
+          try {
+            const [tasksResponse, machinesResponse] = await Promise.all([
+              api.get('/preventive-maintenance'), 
+              api.get('/machines') // Needed for the dropdown
+            ]);
+            setTasks(tasksResponse.data);
+            setMachines(machinesResponse.data);
+          } catch (err) { 
+            setError('Failed to fetch data.'); 
+            console.error(err); 
+          } 
+          finally { setLoading(false); }
+        };
+        fetchData();
+    } else if (user) {
+        setError("You do not have permission to view this page.");
+        setLoading(false);
+    }
+  }, [user]); // Re-fetch if user changes
 
-  const handleOpenAddDialog = () => { setEditingTask(null); setFormData({ machineId: '', taskDescription: '', frequencyDays: 30, startDate: new Date().toISOString().split('T')[0] }); setOpen(true); };
-  const handleOpenEditDialog = (task) => { setEditingTask(task); setFormData({ machineId: task.machine_id, taskDescription: task.task_description, frequencyDays: task.frequency_days, next_due_date: new Date(task.next_due_date).toISOString().split('T')[0] }); setOpen(true); };
-  const handleClose = () => { setOpen(false); setEditingTask(null); };
+  const handleOpenAddDialog = () => {
+    setEditingTask(null);
+    setFormData({ machineId: '', taskDescription: '', frequencyDays: 30, startDate: new Date().toISOString().split('T')[0] });
+    setOpen(true);
+  };
+
+  const handleOpenEditDialog = (task) => {
+    setEditingTask(task);
+    setFormData({ 
+      machineId: task.machine_id, 
+      taskDescription: task.task_description, 
+      frequencyDays: task.frequency_days, 
+      next_due_date: new Date(task.next_due_date).toISOString().split('T')[0] 
+    });
+    setOpen(true);
+  };
+  
+  const handleClose = () => {
+    setOpen(false);
+    setEditingTask(null);
+  };
+  
   const handleInputChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
 
   const handleSubmit = async () => {
@@ -55,23 +91,45 @@ function PreventiveMaintenance() {
   const handleCompleteTask = async (taskId) => {
     try {
       const response = await api.post(`/preventive-maintenance/${taskId}/complete`);
+      // Update the task in the list with the new data (new due date, etc.)
       setTasks(currentTasks => 
         currentTasks.map(task => task.id === taskId ? response.data.task : task)
                     .sort((a, b) => new Date(a.next_due_date) - new Date(b.next_due_date))
       );
-    } catch (err) { setError('Failed to complete task.'); console.error(err); }
+    } catch (err) {
+      setError('Failed to complete task.');
+      console.error(err);
+    }
   };
   
-  const handleDeleteClick = (task) => { setTaskToDelete(task); setConfirmOpen(true); };
-  const handleConfirmClose = () => { setConfirmOpen(false); setTaskToDelete(null); };
+  const handleDeleteClick = (task) => {
+    setTaskToDelete(task);
+    setConfirmOpen(true);
+  };
+  
+  const handleConfirmClose = () => {
+    setConfirmOpen(false);
+    setTaskToDelete(null);
+  };
+  
   const handleConfirmDelete = async () => {
     if (!taskToDelete) return;
     try {
       await api.delete(`/preventive-maintenance/${taskToDelete.id}`);
-      setTasks(tasks.filter(t => t.id !== taskToDelete.id));
+      setTasks(tasks.filter(t => t.id !== taskToDelete.id)); // Remove from list
       handleConfirmClose();
     } catch (err) { setError(err.response?.data?.message || 'Failed to delete task.'); }
   };
+
+  // Do not render anything if the user is not authorized
+  if (!user || !['Maintenance Manager', 'Supervisor'].includes(user.role)) {
+     return (
+        <Container maxWidth="lg">
+             <Typography variant="h4" component="h1" gutterBottom>Preventive Maintenance</Typography>
+             <Alert severity="error">{error || "You do not have permission to view this page."}</Alert>
+        </Container>
+     );
+  }
 
   return (
     <Container maxWidth="lg">
@@ -82,6 +140,7 @@ function PreventiveMaintenance() {
         )}
       </Box>
 
+      {/* Add/Edit Dialog */}
       <Dialog open={open} onClose={handleClose}>
         <DialogTitle>{editingTask ? 'Edit Task' : 'Schedule a New Task'}</DialogTitle>
         <DialogContent>
@@ -105,25 +164,49 @@ function PreventiveMaintenance() {
         </DialogActions>
       </Dialog>
       
-      <Dialog open={confirmOpen} onClose={handleConfirmClose}>{/*...confirm dialog jsx...*/}</Dialog>
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={confirmOpen} onClose={handleConfirmClose}>
+        <DialogTitle>Confirm Deletion</DialogTitle>
+        <DialogContent><DialogContentText>Are you sure you want to delete this scheduled task: "{taskToDelete?.task_description}"?</DialogContentText></DialogContent>
+        <DialogActions>
+            <Button onClick={handleConfirmClose}>Cancel</Button>
+            <Button onClick={handleConfirmDelete} color="error">Delete</Button>
+        </DialogActions>
+      </Dialog>
 
       {loading && <CircularProgress />}
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
-      {!loading && !error && tasks.map(task => (
-        <Card key={task.id} sx={{ mb: 2 }}>
-          <CardContent>{/*...card content jsx...*/}</CardContent>
-          <CardActions>
-            {user && user.role === 'Maintenance Manager' && (
-              <>
-                <Button size="small" onClick={() => handleCompleteTask(task.id)}>Mark as Complete</Button>
-                <IconButton onClick={() => handleOpenEditDialog(task)} color="primary"><EditIcon fontSize="small" /></IconButton>
-                <IconButton onClick={() => handleDeleteClick(task)} color="error"><DeleteIcon fontSize="small" /></IconButton>
-              </>
-            )}
-          </CardActions>
-        </Card>
-      ))}
+      {!loading && !error && (
+        tasks.length > 0 ? (
+            tasks.map(task => (
+                <Card key={task.id} sx={{ mb: 2 }}>
+                <CardContent>
+                    <Typography variant="h6">{task.task_description}</Typography>
+                    <Typography color="text.secondary">Machine: {task.machine_name}</Typography>
+                    <Typography variant="body2" sx={{ mt: 1 }}>Frequency: Every {task.frequency_days} days</Typography>
+                    <Typography variant="body2">Next Due: <strong>{new Date(task.next_due_date).toLocaleDateString()}</strong></Typography>
+                    {task.last_performed_at && (<Typography variant="caption" color="text.secondary">Last Performed: {new Date(task.last_performed_at).toLocaleDateString()}</Typography>)}
+                </CardContent>
+                <CardActions>
+                    {/* Mark as Complete is visible to Manager and Supervisor */}
+                    {user && ['Maintenance Manager', 'Supervisor'].includes(user.role) && (
+                        <Button size="small" onClick={() => handleCompleteTask(task.id)}>Mark as Complete</Button>
+                    )}
+                    {/* Edit/Delete only visible to Manager */}
+                    {user && user.role === 'Maintenance Manager' && (
+                    <>
+                        <IconButton onClick={() => handleOpenEditDialog(task)} color="primary"><EditIcon fontSize="small" /></IconButton>
+                        <IconButton onClick={() => handleDeleteClick(task)} color="error"><DeleteIcon fontSize="small" /></IconButton>
+                    </>
+                    )}
+                </CardActions>
+                </Card>
+            ))
+        ) : (
+             <Typography>No preventive maintenance tasks scheduled.</Typography>
+        )
+      )}
     </Container>
   );
 }

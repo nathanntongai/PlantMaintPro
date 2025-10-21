@@ -124,6 +124,24 @@ CREATE TABLE IF NOT EXISTS notification_logs (
     sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Create a custom type for inspection status
+DO $$ BEGIN
+    CREATE TYPE inspection_status_enum AS ENUM ('Okay', 'Not Okay');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- Table for Machine Inspections
+CREATE TABLE IF NOT EXISTS machine_inspections (
+    id SERIAL PRIMARY KEY,
+    machine_id INTEGER NOT NULL REFERENCES machines(id),
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    inspected_by_id INTEGER NOT NULL REFERENCES users(id),
+    status inspection_status_enum NOT NULL,
+    remarks TEXT, -- For the description if "Not Okay"
+    inspected_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Triggers (Must be at the very end)
 DROP TRIGGER IF EXISTS set_timestamp ON breakdowns;
 CREATE TRIGGER set_timestamp

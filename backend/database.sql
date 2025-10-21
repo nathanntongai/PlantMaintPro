@@ -1,4 +1,4 @@
--- backend/database.sql
+-- This function MUST be defined first.
 CREATE OR REPLACE FUNCTION trigger_set_timestamp()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -7,12 +7,30 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Create or Add to the status enum type
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'status_enum') THEN
+        CREATE TYPE status_enum AS ENUM ('Pending Approval', 'Reported', 'Acknowledged', 'In Progress', 'Resolved', 'Closed');
+    END IF;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- Create or Add to the job order status enum type
+DO $$ BEGIN
+    CREATE TYPE job_order_status_enum AS ENUM ('Requested', 'Approved', 'Rejected', 'Assigned', 'In Progress', 'Completed', 'Closed');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- Table for Companies
 CREATE TABLE IF NOT EXISTS companies (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Table for Users
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     company_id INTEGER NOT NULL REFERENCES companies(id),
@@ -26,6 +44,7 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Table for Machines
 CREATE TABLE IF NOT EXISTS machines (
     id SERIAL PRIMARY KEY,
     company_id INTEGER NOT NULL REFERENCES companies(id),
@@ -34,28 +53,22 @@ CREATE TABLE IF NOT EXISTS machines (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
-DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'status_enum') THEN
-        CREATE TYPE status_enum AS ENUM ('Reported', 'Acknowledged', 'In Progress', 'Resolved', 'Closed');
-    END IF;
-EXCEPTION
-    WHEN duplicate_object THEN null;
-END $$;
-
+-- Table for Machine Breakdowns
 CREATE TABLE IF NOT EXISTS breakdowns (
     id SERIAL PRIMARY KEY,
     machine_id INTEGER NOT NULL REFERENCES machines(id),
     company_id INTEGER NOT NULL REFERENCES companies(id),
     reported_by_id INTEGER NOT NULL REFERENCES users(id),
     assigned_to_id INTEGER REFERENCES users(id),
-    approved_by_id INTEGER REFERENCES users(id),
+    approved_by_id INTEGER REFERENCES users(id), -- This column is now included
     description TEXT NOT NULL,
-    status status_enum NOT NULL DEFAULT 'Reported',
+    status status_enum NOT NULL DEFAULT 'Pending Approval', -- Correct default
     reported_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     resolved_at TIMESTAMP WITH TIME ZONE,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- This column is now included
 );
 
+-- Table for Utilities
 CREATE TABLE IF NOT EXISTS utilities (
     id SERIAL PRIMARY KEY,
     company_id INTEGER NOT NULL REFERENCES companies(id),
@@ -64,6 +77,7 @@ CREATE TABLE IF NOT EXISTS utilities (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Table for Utility Readings
 CREATE TABLE IF NOT EXISTS utility_readings (
     id SERIAL PRIMARY KEY,
     utility_id INTEGER NOT NULL REFERENCES utilities(id),
@@ -73,6 +87,7 @@ CREATE TABLE IF NOT EXISTS utility_readings (
     recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Table for Preventive Maintenance Tasks
 CREATE TABLE IF NOT EXISTS preventive_maintenance_tasks (
     id SERIAL PRIMARY KEY,
     machine_id INTEGER NOT NULL REFERENCES machines(id),
@@ -83,12 +98,7 @@ CREATE TABLE IF NOT EXISTS preventive_maintenance_tasks (
     last_performed_at TIMESTAMP WITH TIME ZONE
 );
 
-DO $$ BEGIN
-    CREATE TYPE job_order_status_enum AS ENUM ('Requested', 'Approved', 'Rejected', 'Assigned', 'In Progress', 'Completed', 'Closed');
-EXCEPTION
-    WHEN duplicate_object THEN null;
-END $$;
-
+-- Table for Job Orders
 CREATE TABLE IF NOT EXISTS job_orders (
     id SERIAL PRIMARY KEY,
     machine_id INTEGER NOT NULL REFERENCES machines(id),
@@ -103,6 +113,7 @@ CREATE TABLE IF NOT EXISTS job_orders (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Table for Notification Logs
 CREATE TABLE IF NOT EXISTS notification_logs (
     id SERIAL PRIMARY KEY,
     breakdown_id INTEGER REFERENCES breakdowns(id),
@@ -113,6 +124,7 @@ CREATE TABLE IF NOT EXISTS notification_logs (
     sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Triggers (Must be at the very end)
 DROP TRIGGER IF EXISTS set_timestamp ON breakdowns;
 CREATE TRIGGER set_timestamp
 BEFORE UPDATE ON breakdowns

@@ -3,30 +3,16 @@ const fs = require('fs');
 const path = require('path');
 const db = require('./db');
 
-const runSQLFile = async (filePath) => {
+const runMigration = async () => {
   try {
-    const sql = fs.readFileSync(filePath, 'utf8');
-    console.log(`Executing SQL from ${path.basename(filePath)}...`);
-    await db.query(sql);
-    console.log(`✅ Successfully executed ${path.basename(filePath)}`);
-  } catch (error) {
-    console.error(`❌ Error executing ${path.basename(filePath)}:`, error);
-    throw error;
-  }
-};
-
-const runMigrations = async () => {
-  try {
+    const sqlFilePath = path.join(__dirname, 'database.sql');
+    const sql = fs.readFileSync(sqlFilePath, 'utf8');
     console.log('Starting database migration...');
-    
-    // Run the main schema file first
-    await runSQLFile(path.join(__dirname, 'database.sql'));
-
-    console.log('✅ Database main schema created successfully!');
+    await db.query(sql);
+    console.log('✅ Database migration completed successfully!');
   } catch (error) {
-    console.error('❌ Database migration failed.');
-    process.exit(1); 
+    console.error('❌ Error creating database tables:', error);
+    process.exit(1);
   }
 };
-
-runMigrations();
+runMigration();

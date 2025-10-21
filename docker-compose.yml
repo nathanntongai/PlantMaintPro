@@ -1,14 +1,19 @@
+# docker-compose.yml (New version with Docker-native init)
 services:
   database:
     image: postgres:15
     container_name: plantmaint_db
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_PASSWORD: ${DB_PASSWORD} # Reads from Codespaces secret
       POSTGRES_DB: postgres
     ports:
       - "5432:5432"
     volumes:
+      # This line links your local SQL file into the container's init directory.
+      # Docker will automatically run this file ONCE when the database is first created.
+      - ./backend/database.sql:/docker-entrypoint-initdb.d/init.sql
+      # This line persists the database data after it's created
       - postgres_data:/var/lib/postgresql/data
 
   backend:
@@ -25,10 +30,10 @@ services:
       DB_PORT: 5432
       DB_DATABASE: postgres
       JWT_SECRET: ${JWT_SECRET}
-      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID} # Reads from Codespaces secret
-      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN} # Reads from Codespaces secret
-      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER} # Reads from Codespaces secret
-
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
+    
   frontend:
     build: ./frontend
     container_name: plantmaint_frontend
@@ -36,6 +41,6 @@ services:
       - "8080:80"
     depends_on:
       - backend
-
+      
 volumes:
   postgres_data:

@@ -9,6 +9,7 @@ import PreventiveMaintenance from './pages/PreventiveMaintenance';
 import UserManagement from './pages/UserManagement';
 import MachineManagement from './pages/MachineManagement';
 import JobOrderManagement from './pages/JobOrderManagement';
+import MachineInspections from './pages/MachineInspections';
 
 function ProtectedRoutes() {
   const { token } = useAuth();
@@ -30,6 +31,7 @@ function App() {
         <Route path="/user-management" element={<UserManagement />} />
         <Route path="/" element={<Navigate to="/dashboard" />} />
         <Route path="/job-orders" element={<JobOrderManagement />} />
+        <Route path="/inspections" element={<MachineInspections />} />
       </Route>
     </Routes>
   );

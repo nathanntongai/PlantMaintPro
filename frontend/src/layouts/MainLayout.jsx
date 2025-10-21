@@ -36,6 +36,13 @@ function MainLayout({ children }) {
          </ListItemButton>
         </ListItem>
       )}
+      {user && ['Maintenance Manager', 'Supervisor', 'Maintenance Technician'].includes(user.role) && (
+        <ListItem disablePadding>
+          <ListItemButton component={Link} to="/inspections">
+           <ListItemText primary="Machine Inspections" />
+         </ListItemButton>
+       </ListItem>
+      )}
         <ListItem disablePadding>
           <ListItemButton component={Link} to="/preventive-maintenance">
             <ListItemText primary="Preventive Maintenance" />

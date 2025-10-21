@@ -134,9 +134,9 @@ app.post('/whatsapp', async (req, res) => {
 
     // --- Process message asynchronously ---
     try {
-        const from = req.body.From;
+        const from = req.body.From; // e.g., whatsapp:+1...
         const msg_body = req.body.Body.trim().toLowerCase();
-        const recipientNumber = from.replace('whatsapp:+', '');
+        const recipientNumber = from.replace('whatsapp:+', ''); // For sending replies back
         console.log(`\n--- Incoming message from ${from}: "${msg_body}"`);
 
         const userResult = await db.query('SELECT * FROM users WHERE phone_number = $1', [from]);
@@ -149,15 +149,15 @@ app.post('/whatsapp', async (req, res) => {
         const currentState = user.whatsapp_state || 'IDLE';
         let context = user.whatsapp_context || {};
         const userRole = user.role;
-        let finalResponseMessage = null;
+        let finalResponseMessage = null; // Use this to send reply at the end
 
         // --- Approval/Disapproval Command Check (runs regardless of state) ---
         const approvalMatch = msg_body.match(/^(approve|disapprove)\s+(\d+)$/);
         if (approvalMatch && ['Supervisor', 'Maintenance Manager'].includes(userRole)) {
              console.log("DEBUG: Matched approval/disapproval command.");
-             const action = approvalMatch[1];
+             const action = approvalMatch[1]; // 'approve' or 'disapprove'
              const breakdownIdToUpdate = parseInt(approvalMatch[2], 10);
-             const newStatus = action === 'approve' ? 'Reported' : 'Closed';
+             const newStatus = action === 'approve' ? 'Reported' : 'Closed'; // Disapproved = Closed
              console.log(`DEBUG: Attempting to ${action} breakdown ${breakdownIdToUpdate} to status ${newStatus}`);
 
              const statusUpdate = await db.query(
@@ -251,7 +251,26 @@ app.post('/whatsapp', async (req, res) => {
                                 finalResponseMessage = "Please reply with the Job Order ID number to check its status.";
                                 await db.query("UPDATE users SET whatsapp_state = 'AWAITING_JOB_ORDER_ID_STATUS', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
                             }
-                            else if (['PM_ACTIVITIES_LIST', 'KPI_REPORT', 'AWAITING_PM_COMPLETION_CHOICE'].includes(selectedOption.nextState)) {
+                            else if (selectedOption.nextState === 'PM_ACTIVITIES_LIST') {
+                                const pmTasks = await db.query(
+                                    `SELECT pmt.task_description, pmt.next_due_date, m.name as machine_name
+                                     FROM preventive_maintenance_tasks pmt
+                                     JOIN machines m ON pmt.machine_id = m.id
+                                     WHERE pmt.company_id = $1 AND pmt.next_due_date <= (CURRENT_DATE + INTERVAL '7 days')
+                                     ORDER BY pmt.next_due_date ASC`,
+                                    [user.company_id]
+                                );
+                                if (pmTasks.rows.length === 0) {
+                                    finalResponseMessage = "No Preventive Maintenance tasks are due in the next 7 days.";
+                                } else {
+                                    finalResponseMessage = "Upcoming PM Tasks (Next 7 Days):\n\n";
+                                    pmTasks.rows.forEach(task => {
+                                        finalResponseMessage += `*${new Date(task.next_due_date).toLocaleDateString()}* - ${task.machine_name}:\n  ${task.task_description}\n\n`;
+                                    });
+                                }
+                                await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                            }
+                            else if (['KPI_REPORT', 'AWAITING_PM_COMPLETION_CHOICE'].includes(selectedOption.nextState)) {
                                  finalResponseMessage = `You selected "${selectedOption.text}". This feature is under development.`;
                                  await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
                             }
@@ -319,7 +338,7 @@ app.post('/whatsapp', async (req, res) => {
                         }
                         break;
 
-                    case 'AWAITING_COMPLETION_CHOICE':
+                     case 'AWAITING_COMPLETION_CHOICE':
                         const completionChoiceIndex = parseInt(msg_body, 10) - 1;
                         if (context.completion_map && completionChoiceIndex >= 0 && completionChoiceIndex < context.completion_map.length) {
                             context.breakdown_to_complete = context.completion_map[completionChoiceIndex];
@@ -376,7 +395,7 @@ app.post('/whatsapp', async (req, res) => {
                         }
                         break;
 
-                    case 'AWAITING_ROOT_CAUSE_FIXED':
+                     case 'AWAITING_ROOT_CAUSE_FIXED':
                          if (userRole === 'Maintenance Technician') {
                             const breakdownIdToComplete = context.breakdown_to_complete;
                             const remark = context.completion_remark;
@@ -504,8 +523,7 @@ app.post('/whatsapp', async (req, res) => {
         // Send the final response message if one was generated
          if (finalResponseMessage) {
              console.log(`DEBUG: Sending TwiML response: ${finalResponseMessage.replace(/\n/g, " ")}`);
-             // We are not awaiting this, so the function can return quickly
-             sendBulkWhatsAppMessages([{ to: recipientNumber, text: finalResponseMessage }]);
+             await sendBulkWhatsAppMessages([{ to: recipientNumber, text: finalResponseMessage }]);
          }
 
     } catch (error) {
@@ -514,8 +532,12 @@ app.post('/whatsapp', async (req, res) => {
              const from = req.body.From;
              if (from) {
                  const recipientNumber = from.replace('whatsapp:+', '');
-                 // Send a simple error message using TwiML
-                 twiml.message("Sorry, a critical error occurred. Please try again later.");
+                 // Use TwiML for the error reply since we are in the main try/catch block
+                 const twimlError = new twilio.twiml.MessagingResponse();
+                 twimlError.message("Sorry, a critical error occurred. Please try again.");
+                 res.writeHead(200, { 'Content-Type': 'text/xml' });
+                 res.end(twimlError.toString());
+                 return; // Exit after sending error
              }
          } catch (notifyError) {
              console.error("Failed to send error notification:", notifyError);
@@ -563,53 +585,6 @@ app.get('/charts/utility-consumption', authenticateToken, authorize(MANAGER_AND_
 // Job Order Management
 app.get('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = `SELECT jo.*, m.name as machine_name, u_req.name as requested_by_name FROM job_orders jo JOIN machines m ON jo.machine_id = m.id JOIN users u_req ON jo.requested_by_id = u_req.id WHERE jo.company_id = $1 ORDER BY jo.requested_at DESC`; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching job orders:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { machineId, description } = req.body; const { userId, companyId } = req.user; const machineCheck = await db.query('SELECT id FROM machines WHERE id = $1 AND company_id = $2', [machineId, companyId]); if (machineCheck.rows.length === 0) { return res.status(404).json({ message: 'Machine not found.' }); } const result = await db.query(`INSERT INTO job_orders (machine_id, company_id, requested_by_id, description) VALUES ($1, $2, $3, $4) RETURNING *`, [machineId, companyId, userId, description]); res.status(201).json({ message: 'Job Order created!', jobOrder: result.rows[0] }); } catch (error) { console.error('Error creating job order:', error); res.status(500).json({ message: 'Internal server error' }); } });
-
-// Machine Inspection Management
-app.get('/inspections', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => {
-    try {
-        const { companyId } = req.user;
-        const query = `
-            SELECT ins.*, m.name as machine_name, u.name as inspected_by_name
-            FROM machine_inspections ins
-            JOIN machines m ON ins.machine_id = m.id
-            JOIN users u ON ins.inspected_by_id = u.id
-            WHERE ins.company_id = $1
-            ORDER BY ins.inspected_at DESC
-        `;
-        const result = await db.query(query, [companyId]);
-        res.json(result.rows);
-    } catch (error) {
-        console.error('Error fetching machine inspections:', error);
-        res.status(500).json({ message: 'Internal server error' });
-    }
-});
-
-app.post('/inspections', authenticateToken, authorize(ALL_ROLES), async (req, res) => {
-    try {
-        const { machineId, status, remarks } = req.body;
-        const { userId, companyId } = req.user;
-
-        // Simple validation
-        if (!machineId || !status) {
-            return res.status(400).json({ message: 'Machine ID and status are required.' });
-        }
-        if (status === 'Not Okay' && !remarks) {
-             return res.status(400).json({ message: 'Remarks are required if status is "Not Okay".' });
-        }
-
-        const result = await db.query(
-            `INSERT INTO machine_inspections (machine_id, company_id, inspected_by_id, status, remarks)
-             VALUES ($1, $2, $3, $4, $5)
-             RETURNING *`,
-            [machineId, companyId, userId, status, remarks || null] // Use null if remarks are empty
-        );
-        
-        res.status(201).json({ message: 'Inspection logged successfully!', inspection: result.rows[0] });
-    } catch (error) {
-        console.error('Error logging inspection:', error);
-        res.status(500).json({ message: 'Internal server error' });
-    }
-});
 
 // Preventive Maintenance
 app.get('/preventive-maintenance', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.company_id = $1 ORDER BY pmt.next_due_date ASC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching maintenance tasks:', error); res.status(500).json({ message: 'Internal server error' }); } });

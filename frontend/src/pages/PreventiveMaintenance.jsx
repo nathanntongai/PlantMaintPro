@@ -89,18 +89,23 @@ function PreventiveMaintenance() {
   };
   
   const handleCompleteTask = async (taskId) => {
-    try {
-      const response = await api.post(`/preventive-maintenance/${taskId}/complete`);
-      // Update the task in the list with the new data (new due date, etc.)
-      setTasks(currentTasks => 
-        currentTasks.map(task => task.id === taskId ? response.data.task : task)
-                    .sort((a, b) => new Date(a.next_due_date) - new Date(b.next_due_date))
-      );
-    } catch (err) {
-      setError('Failed to complete task.');
-      console.error(err);
-    }
-  };
+  try {
+    setError(''); // Clear previous errors
+    const response = await api.post(`/preventive-maintenance/${taskId}/complete`);
+
+    // Update the task in the list with the new data (new due date, etc.)
+    setTasks(currentTasks => 
+      currentTasks.map(task => 
+        task.id === taskId ? response.data.task : task
+      )
+      // Re-sort the list by the new due date
+      .sort((a, b) => new Date(a.next_due_date) - new Date(b.next_due_date))
+    );
+  } catch (err) {
+    setError(err.response?.data?.message || 'Failed to complete task.');
+    console.error(err);
+  }
+};
   
   const handleDeleteClick = (task) => {
     setTaskToDelete(task);

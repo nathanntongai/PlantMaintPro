@@ -1,5 +1,4 @@
--- backend/database.sql (Part 1: Initial Schema)
-
+-- backend/database.sql
 CREATE OR REPLACE FUNCTION trigger_set_timestamp()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -35,7 +34,6 @@ CREATE TABLE IF NOT EXISTS machines (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Define the ENUM WITHOUT 'Pending Approval' initially
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'status_enum') THEN
         CREATE TYPE status_enum AS ENUM ('Reported', 'Acknowledged', 'In Progress', 'Resolved', 'Closed');
@@ -44,7 +42,6 @@ EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
 
--- Create the breakdowns table using 'Reported' as the default
 CREATE TABLE IF NOT EXISTS breakdowns (
     id SERIAL PRIMARY KEY,
     machine_id INTEGER NOT NULL REFERENCES machines(id),
@@ -53,21 +50,69 @@ CREATE TABLE IF NOT EXISTS breakdowns (
     assigned_to_id INTEGER REFERENCES users(id),
     approved_by_id INTEGER REFERENCES users(id),
     description TEXT NOT NULL,
-    status status_enum NOT NULL DEFAULT 'Reported', -- Initial default
+    status status_enum NOT NULL DEFAULT 'Reported',
     reported_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     resolved_at TIMESTAMP WITH TIME ZONE,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- (All other table definitions: utilities, utility_readings, preventive_maintenance_tasks, job_orders, notification_logs remain the same)
-CREATE TABLE IF NOT EXISTS utilities ( /* ... */ );
-CREATE TABLE IF NOT EXISTS utility_readings ( /* ... */ );
-CREATE TABLE IF NOT EXISTS preventive_maintenance_tasks ( /* ... */ );
-DO $$ BEGIN CREATE TYPE job_order_status_enum AS ENUM ('Requested', 'Approved', 'Rejected', 'Assigned', 'In Progress', 'Completed', 'Closed'); EXCEPTION WHEN duplicate_object THEN null; END $$;
-CREATE TABLE IF NOT EXISTS job_orders ( /* ... */ );
-CREATE TABLE IF NOT EXISTS notification_logs ( /* ... */ );
+CREATE TABLE IF NOT EXISTS utilities (
+    id SERIAL PRIMARY KEY,
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    name VARCHAR(100) NOT NULL,
+    unit VARCHAR(20) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
 
--- Triggers (Must be at the very end)
+CREATE TABLE IF NOT EXISTS utility_readings (
+    id SERIAL PRIMARY KEY,
+    utility_id INTEGER NOT NULL REFERENCES utilities(id),
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    recorded_by_id INTEGER NOT NULL REFERENCES users(id),
+    reading_value NUMERIC(10, 2) NOT NULL,
+    recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS preventive_maintenance_tasks (
+    id SERIAL PRIMARY KEY,
+    machine_id INTEGER NOT NULL REFERENCES machines(id),
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    task_description TEXT NOT NULL,
+    frequency_days INTEGER NOT NULL,
+    next_due_date DATE NOT NULL,
+    last_performed_at TIMESTAMP WITH TIME ZONE
+);
+
+DO $$ BEGIN
+    CREATE TYPE job_order_status_enum AS ENUM ('Requested', 'Approved', 'Rejected', 'Assigned', 'In Progress', 'Completed', 'Closed');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+CREATE TABLE IF NOT EXISTS job_orders (
+    id SERIAL PRIMARY KEY,
+    machine_id INTEGER NOT NULL REFERENCES machines(id),
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    requested_by_id INTEGER NOT NULL REFERENCES users(id),
+    assigned_to_id INTEGER REFERENCES users(id),
+    description TEXT NOT NULL,
+    status job_order_status_enum NOT NULL DEFAULT 'Requested',
+    requested_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    approved_at TIMESTAMP WITH TIME ZONE,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS notification_logs (
+    id SERIAL PRIMARY KEY,
+    breakdown_id INTEGER REFERENCES breakdowns(id),
+    recipient_id INTEGER REFERENCES users(id),
+    recipient_phone_number VARCHAR(50) NOT NULL,
+    message_body TEXT,
+    delivery_status VARCHAR(20) NOT NULL,
+    sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 DROP TRIGGER IF EXISTS set_timestamp ON breakdowns;
 CREATE TRIGGER set_timestamp
 BEFORE UPDATE ON breakdowns

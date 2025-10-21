@@ -564,6 +564,53 @@ app.get('/charts/utility-consumption', authenticateToken, authorize(MANAGER_AND_
 app.get('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = `SELECT jo.*, m.name as machine_name, u_req.name as requested_by_name FROM job_orders jo JOIN machines m ON jo.machine_id = m.id JOIN users u_req ON jo.requested_by_id = u_req.id WHERE jo.company_id = $1 ORDER BY jo.requested_at DESC`; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching job orders:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { machineId, description } = req.body; const { userId, companyId } = req.user; const machineCheck = await db.query('SELECT id FROM machines WHERE id = $1 AND company_id = $2', [machineId, companyId]); if (machineCheck.rows.length === 0) { return res.status(404).json({ message: 'Machine not found.' }); } const result = await db.query(`INSERT INTO job_orders (machine_id, company_id, requested_by_id, description) VALUES ($1, $2, $3, $4) RETURNING *`, [machineId, companyId, userId, description]); res.status(201).json({ message: 'Job Order created!', jobOrder: result.rows[0] }); } catch (error) { console.error('Error creating job order:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
+// Machine Inspection Management
+app.get('/inspections', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => {
+    try {
+        const { companyId } = req.user;
+        const query = `
+            SELECT ins.*, m.name as machine_name, u.name as inspected_by_name
+            FROM machine_inspections ins
+            JOIN machines m ON ins.machine_id = m.id
+            JOIN users u ON ins.inspected_by_id = u.id
+            WHERE ins.company_id = $1
+            ORDER BY ins.inspected_at DESC
+        `;
+        const result = await db.query(query, [companyId]);
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Error fetching machine inspections:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+app.post('/inspections', authenticateToken, authorize(ALL_ROLES), async (req, res) => {
+    try {
+        const { machineId, status, remarks } = req.body;
+        const { userId, companyId } = req.user;
+
+        // Simple validation
+        if (!machineId || !status) {
+            return res.status(400).json({ message: 'Machine ID and status are required.' });
+        }
+        if (status === 'Not Okay' && !remarks) {
+             return res.status(400).json({ message: 'Remarks are required if status is "Not Okay".' });
+        }
+
+        const result = await db.query(
+            `INSERT INTO machine_inspections (machine_id, company_id, inspected_by_id, status, remarks)
+             VALUES ($1, $2, $3, $4, $5)
+             RETURNING *`,
+            [machineId, companyId, userId, status, remarks || null] // Use null if remarks are empty
+        );
+        
+        res.status(201).json({ message: 'Inspection logged successfully!', inspection: result.rows[0] });
+    } catch (error) {
+        console.error('Error logging inspection:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
 // Preventive Maintenance
 app.get('/preventive-maintenance', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.company_id = $1 ORDER BY pmt.next_due_date ASC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching maintenance tasks:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/preventive-maintenance', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { machineId, taskDescription, frequencyDays, startDate } = req.body; const { companyId } = req.user; const nextDueDate = new Date(startDate); const result = await db.query(`INSERT INTO preventive_maintenance_tasks (machine_id, company_id, task_description, frequency_days, next_due_date) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [machineId, companyId, taskDescription, frequencyDays, nextDueDate]); res.status(201).json({ message: 'Task scheduled!', task: result.rows[0] }); } catch (error) { console.error('Error scheduling task:', error); res.status(500).json({ message: 'Internal server error' }); } });

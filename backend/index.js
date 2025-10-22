@@ -1,3 +1,5 @@
+// backend/index.js (The Absolute Final, 100% Complete Version)
+
 const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
@@ -293,9 +295,26 @@ app.post('/whatsapp', async (req, res) => {
                                 finalResponseMessage += `*Total Downtime:* ${totalDowntime}\n`;
                                 await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
                             }
-                            else if (['AWAITING_PM_COMPLETION_CHOICE'].includes(selectedOption.nextState)) {
-                                 finalResponseMessage = `You selected "${selectedOption.text}". This feature is under development.`;
-                                 await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                            else if (selectedOption.nextState === 'AWAITING_PM_COMPLETION_CHOICE') {
+                                const duePmTasks = await db.query(
+                                    `SELECT pmt.id, pmt.task_description, m.name as machine_name 
+                                     FROM preventive_maintenance_tasks pmt
+                                     JOIN machines m ON pmt.machine_id = m.id
+                                     WHERE pmt.company_id = $1 AND pmt.next_due_date <= CURRENT_DATE`,
+                                    [user.company_id]
+                                );
+                                if (duePmTasks.rows.length === 0) {
+                                    finalResponseMessage = "There are no Preventive Maintenance tasks currently due for completion.";
+                                    await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                                } else {
+                                    let taskList = "Which PM task did you complete? Please reply with the number.\n";
+                                    context.pm_task_map = duePmTasks.rows.map(task => task.id);
+                                    duePmTasks.rows.forEach((task, i) => {
+                                        taskList += `${i + 1}. ${task.machine_name}: ${task.task_description}\n`;
+                                    });
+                                    finalResponseMessage = taskList;
+                                    await db.query("UPDATE users SET whatsapp_state = 'AWAITING_PM_TASK_SELECTION', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
+                                }
                             }
                             else {
                                 finalResponseMessage = `Selected state "${selectedOption.nextState}" is not handled yet.`;
@@ -540,6 +559,27 @@ app.post('/whatsapp', async (req, res) => {
                         await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
                         break;
 
+                    case 'AWAITING_PM_TASK_SELECTION':
+                        const pmChoiceIndex = parseInt(msg_body, 10) - 1;
+                        if (context.pm_task_map && pmChoiceIndex >= 0 && pmChoiceIndex < context.pm_task_map.length) {
+                            const taskIdToComplete = context.pm_task_map[pmChoiceIndex];
+                            
+                            // Get frequency from DB to calculate next due date
+                            const taskRes = await db.query('SELECT frequency_days FROM preventive_maintenance_tasks WHERE id = $1 AND company_id = $2', [taskIdToComplete, user.company_id]);
+                            if (taskRes.rows.length === 0) {
+                                finalResponseMessage = "Task not found. Please start over.";
+                            } else {
+                                const { frequency_days } = taskRes.rows[0];
+                                const query = ` UPDATE preventive_maintenance_tasks SET last_performed_at = NOW(), next_due_date = (NOW() + ($1 * INTERVAL '1 day'))::DATE WHERE id = $2 RETURNING * `;
+                                await db.query(query, [frequency_days, taskIdToComplete]);
+                                finalResponseMessage = `✅ PM Task #${taskIdToComplete} has been marked as complete. The next task is scheduled.`;
+                            }
+                            await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                        } else {
+                            finalResponseMessage = "Invalid task number. Please try again.";
+                        }
+                        break;
+
                     default:
                         finalResponseMessage = "Sorry, I got confused. Let's start over. Send 'hi' to begin.";
                         await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
@@ -566,6 +606,7 @@ app.post('/whatsapp', async (req, res) => {
          }
     }
 });
+
 
 // --- AUTH ENDPOINTS ---
 app.post('/register', async (req, res) => { try { const { companyName, userName, email, password, phoneNumber } = req.body; const passwordHash = await bcrypt.hash(password, 10); const companyResult = await db.query('INSERT INTO companies (name) VALUES ($1) RETURNING id', [companyName]); const newCompanyId = companyResult.rows[0].id; const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null; const userResult = await db.query(`INSERT INTO users (company_id, name, email, password_hash, role, phone_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role`, [newCompanyId, userName, email, passwordHash, 'Maintenance Manager', formattedPhoneNumber]); res.status(201).json({ message: 'Registration successful!', user: userResult.rows[0] }); } catch (error) { if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); } console.error('Registration error:', error); res.status(500).json({ message: 'Internal server error' }); } });

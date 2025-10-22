@@ -1,5 +1,3 @@
-// backend/index.js (The Absolute Final, 100% Complete Version)
-
 const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
@@ -20,7 +18,7 @@ app.use(cors()); // For allowing frontend access
 
 // --- HELPER & BACKGROUND JOBS ---
 
-async function sendBreakdownNotification(breakdownId, companyId) {
+async function sendBreakdownApprovalRequest(breakdownId, companyId) {
     console.log(`Sending approval request for breakdown #${breakdownId}`);
     try {
         const breakdownInfo = await db.query(
@@ -88,7 +86,6 @@ async function notifyTechniciansAndManager(breakdownId, companyId, approverName)
          }
          const { machine_name, description } = breakdownInfo.rows[0];
 
-         // Find Technicians AND Maintenance Manager
          const recipients = await db.query(
              `SELECT id, phone_number FROM users WHERE company_id = $1 AND role IN ('Maintenance Technician', 'Maintenance Manager')`,
              [companyId]
@@ -99,8 +96,7 @@ async function notifyTechniciansAndManager(breakdownId, companyId, approverName)
              return;
          }
 
-         // UPDATED: The message now includes a call to action for Technicians
-         const notificationMessage = `🛠️ Breakdown #${breakdownId} Approved 🛠️\n\nMachine: ${machine_name}\nIssue: ${description}\nApproved by: ${approverName}\n\nTechnicians, please reply with 'ACK ${breakdownId}' to acknowledge and accept this job.`;
+         const notificationMessage = `🛠️ Breakdown #${breakdownId} Approved 🛠️\n\nMachine: ${machine_name}\nIssue: ${description}\nApproved by: ${approverName}\n\nPlease reply with 'ACK ${breakdownId}' to acknowledge and accept this job.`;
          
          const messagesToSend = recipients.rows
              .filter(r => r.phone_number)
@@ -158,7 +154,10 @@ app.post('/whatsapp', async (req, res) => {
 
         // --- Approval/Disapproval Command Check (runs regardless of state) ---
         const approvalMatch = msg_body.match(/^(approve|disapprove)\s+(\d+)$/);
+        
+        // --- Acknowledgment Command Check (runs regardless of state) ---
         const ackMatch = msg_body.match(/^(ack|acknowledge)\s+(\d+)$/);
+
         if (approvalMatch && ['Supervisor', 'Maintenance Manager'].includes(userRole)) {
              console.log("DEBUG: Matched approval/disapproval command.");
              const action = approvalMatch[1]; // 'approve' or 'disapprove'
@@ -185,13 +184,12 @@ app.post('/whatsapp', async (req, res) => {
              }
              console.log("DEBUG: Resetting user state to IDLE after approval/disapproval.");
              await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
-
+        
         } else if (ackMatch && userRole === 'Maintenance Technician') {
             // NEW: Handle the 'ack <id>' command
             console.log("DEBUG: Matched acknowledgment command.");
             const breakdownIdToAck = parseInt(ackMatch[2], 10);
 
-            // Check if this breakdown is already acknowledged
             const currentBreakdown = await db.query(
                 `SELECT status, assigned_to_id FROM breakdowns WHERE id = $1 AND company_id = $2`,
                 [breakdownIdToAck, user.company_id]
@@ -200,17 +198,14 @@ app.post('/whatsapp', async (req, res) => {
             if (currentBreakdown.rows.length === 0) {
                 finalResponseMessage = `Breakdown #${breakdownIdToAck} was not found.`;
             } else if (currentBreakdown.rows[0].status !== 'Reported') {
-                // Check if it's already acknowledged or in progress
                 finalResponseMessage = `Breakdown #${breakdownIdToAck} has already been acknowledged or is in progress.`;
             } else {
-                // Acknowledge the breakdown: Set status and assign to this user
                 await db.query(
                     `UPDATE breakdowns SET status = 'Acknowledged', assigned_to_id = $1 WHERE id = $2`,
                     [user.id, breakdownIdToAck]
                 );
                 finalResponseMessage = `✅ You have acknowledged Breakdown #${breakdownIdToAck}. Status updated to 'Acknowledged'.`;
                 
-                // Notify Manager/Supervisor that it's been taken
                 const managers = await db.query(
                     `SELECT id, phone_number FROM users WHERE company_id = $1 AND role IN ('Supervisor', 'Maintenance Manager')`,
                     [user.company_id]
@@ -224,9 +219,8 @@ app.post('/whatsapp', async (req, res) => {
                     sendBulkWhatsAppMessages(messagesToSend); // Send in background
                 }
             }
-            // Reset state after handling command
             await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
-
+        
         } else { // --- Standard Conversational Flow ---
             const reset_words = ['hi', 'hello', 'menu', 'cancel', 'start'];
             if (reset_words.includes(msg_body) || currentState === 'IDLE') {

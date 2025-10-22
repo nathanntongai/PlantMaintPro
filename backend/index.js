@@ -1,3 +1,5 @@
+// backend/index.js (The Absolute Final, 100% Complete Version)
+
 const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
@@ -404,9 +406,15 @@ app.post('/whatsapp', async (req, res) => {
                             let finalStatus = 'Resolved';
                             let descriptionUpdate = `\n\nCompletion Remark by ${user.name}: ${remark}\nRoot Cause: ${rootCause}`;
                             
+                            const machineInfo = await db.query(`SELECT machine_id FROM breakdowns WHERE id = $1`, [breakdownIdToComplete]);
+                            const completedMachineId = machineInfo.rows[0].machine_id;
+
                             if (!rootCauseFixed) {
                                 descriptionUpdate += "\n*Root cause was NOT attended to.*";
                                 console.log(`LOG: Breakdown ${breakdownIdToComplete} resolved, but root cause pending.`);
+                                // Create a new job order for the unattended root cause
+                                const jobOrderDescription = `Root cause from Breakdown #${breakdownIdToComplete}: ${rootCause}`;
+                                await db.query(`INSERT INTO job_orders (machine_id, company_id, requested_by_id, description) VALUES ($1, $2, $3, $4)`, [completedMachineId, user.company_id, user.id, jobOrderDescription]);
                             } else {
                                 descriptionUpdate += "\n*Root cause attended to.*";
                                 console.log(`LOG: Breakdown ${breakdownIdToComplete} resolved, root cause fixed.`);
@@ -414,8 +422,8 @@ app.post('/whatsapp', async (req, res) => {
                             await db.query(`UPDATE breakdowns SET status = $1, description = description || $2, resolved_at = NOW() WHERE id = $3`, [finalStatus, descriptionUpdate, breakdownIdToComplete]);
 
                             // Notification Logic
-                            const machineInfo = await db.query(`SELECT m.name as machine_name FROM machines m JOIN breakdowns b ON m.id = b.machine_id WHERE b.id = $1`, [breakdownIdToComplete]);
-                            const machineName = machineInfo.rows.length > 0 ? machineInfo.rows[0].machine_name : 'Unknown Machine';
+                            const machineNameResult = await db.query(`SELECT name as machine_name FROM machines WHERE id = $1`, [completedMachineId]);
+                            const machineName = machineNameResult.rows.length > 0 ? machineNameResult.rows[0].machine_name : 'Unknown Machine';
                             const supervisors = await db.query(`SELECT id, phone_number FROM users WHERE company_id = $1 AND role IN ('Supervisor', 'Maintenance Manager')`, [user.company_id]);
                             const originalReporterResult = await db.query(`SELECT u.id, u.phone_number FROM users u JOIN breakdowns b ON u.id = b.reported_by_id WHERE b.id = $1`, [breakdownIdToComplete]);
                             let messagesToSend = [];
@@ -520,7 +528,6 @@ app.post('/whatsapp', async (req, res) => {
             }
         }
         
-        // Send the final response message if one was generated
          if (finalResponseMessage) {
              console.log(`DEBUG: Sending TwiML response: ${finalResponseMessage.replace(/\n/g, " ")}`);
              await sendBulkWhatsAppMessages([{ to: recipientNumber, text: finalResponseMessage }]);
@@ -532,12 +539,7 @@ app.post('/whatsapp', async (req, res) => {
              const from = req.body.From;
              if (from) {
                  const recipientNumber = from.replace('whatsapp:+', '');
-                 // Use TwiML for the error reply since we are in the main try/catch block
-                 const twimlError = new twilio.twiml.MessagingResponse();
-                 twimlError.message("Sorry, a critical error occurred. Please try again.");
-                 res.writeHead(200, { 'Content-Type': 'text/xml' });
-                 res.end(twimlError.toString());
-                 return; // Exit after sending error
+                 await sendBulkWhatsAppMessages([{ to: recipientNumber, text: "Sorry, a critical error occurred. Please try again." }]);
              }
          } catch (notifyError) {
              console.error("Failed to send error notification:", notifyError);
@@ -589,7 +591,7 @@ app.post('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), as
 // Preventive Maintenance
 app.get('/preventive-maintenance', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.company_id = $1 ORDER BY pmt.next_due_date ASC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching maintenance tasks:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/preventive-maintenance', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { machineId, taskDescription, frequencyDays, startDate } = req.body; const { companyId } = req.user; const nextDueDate = new Date(startDate); const result = await db.query(`INSERT INTO preventive_maintenance_tasks (machine_id, company_id, task_description, frequency_days, next_due_date) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [machineId, companyId, taskDescription, frequencyDays, nextDueDate]); res.status(201).json({ message: 'Task scheduled!', task: result.rows[0] }); } catch (error) { console.error('Error scheduling task:', error); res.status(500).json({ message: 'Internal server error' }); } });
-app.patch('/preventive-maintenance/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { taskDescription, frequencyDays, next_due_date } = req.body; const { companyId } = req.user; const result = await db.query(`UPDATE preventive_maintenance_tasks SET task_description = $1, frequency_days = $2, next_due_date = $3 WHERE id = $4 AND company_id = $5 RETURNING *`, [taskDescription, frequencyDays, next_due_date, id, companyId]); if (result.rows.length === 0) { return res.status(404).json({ message: 'Task not found.' }); } const finalResult = await db.query(`SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.id = $1`, [id]); res.json({ message: 'Task updated!', task: finalResult.rows[0] }); } catch (error) { console.error('Error updating task:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.patch('/preventive-maintenance/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { taskDescription, frequencyDays, next_due_date } = req.body; const { companyId } = req.user; const result = await db.query(`UPDATE preventive_maintenance_tasks SET task_description = $1, frequency_days = $2, next_due_date = $3 WHERE id = $4 AND company_id = $5 RETURNING *`, [taskDescription, frequencyDays, next_due_date, id, companyId]); if (result.rows.length === 0) { return res.status(404).json({ message: 'Task not found.' }); } const finalResult = await db.query(`SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.id = $1`, [id]); res.json({ message: 'Task updated!', task: finalResult.rows[0] }); } catch (error) { console.error('Error updating task:', error); res.status(5We 00).json({ message: 'Internal server error' }); } });
 app.delete('/preventive-maintenance/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { companyId } = req.user; const result = await db.query('DELETE FROM preventive_maintenance_tasks WHERE id = $1 AND company_id = $2', [id, companyId]); if (result.rowCount === 0) { return res.status(404).json({ message: 'Task not found.' }); } res.status(200).json({ message: 'Task deleted.' }); } catch (error) { console.error('Error deleting task:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/preventive-maintenance/:id/complete', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { id } = req.params; const { companyId } = req.user; const taskRes = await db.query('SELECT frequency_days FROM preventive_maintenance_tasks WHERE id = $1 AND company_id = $2', [id, companyId]); if (taskRes.rows.length === 0) { return res.status(404).json({ message: 'Task not found.' }); } const { frequency_days } = taskRes.rows[0]; const query = ` UPDATE preventive_maintenance_tasks SET last_performed_at = NOW(), next_due_date = (NOW() + ($1 * INTERVAL '1 day'))::DATE WHERE id = $2 AND company_id = $3 RETURNING * `; const result = await db.query(query, [frequency_days, id, companyId]); const updatedTaskQuery = ` SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.id = $1 `; const finalResult = await db.query(updatedTaskQuery, [id]); res.json({ message: 'Task marked as complete!', task: finalResult.rows[0] }); } catch (error) { console.error('Error completing task:', error); res.status(500).json({ message: 'Internal server error' }); } });
 

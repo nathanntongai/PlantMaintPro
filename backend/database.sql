@@ -23,6 +23,13 @@ EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
 
+-- Create a custom type for inspection status
+DO $$ BEGIN
+    CREATE TYPE inspection_status_enum AS ENUM ('Okay', 'Not Okay');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
 -- Table for Companies
 CREATE TABLE IF NOT EXISTS companies (
     id SERIAL PRIMARY KEY,
@@ -53,20 +60,20 @@ CREATE TABLE IF NOT EXISTS machines (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Table for Machine Breakdowns
+-- Table for Machine Breakdowns (with all columns)
 CREATE TABLE IF NOT EXISTS breakdowns (
     id SERIAL PRIMARY KEY,
     machine_id INTEGER NOT NULL REFERENCES machines(id),
     company_id INTEGER NOT NULL REFERENCES companies(id),
     reported_by_id INTEGER NOT NULL REFERENCES users(id),
     assigned_to_id INTEGER REFERENCES users(id),
-    approved_by_id INTEGER REFERENCES users(id), -- This column is now included
+    approved_by_id INTEGER REFERENCES users(id),
     description TEXT NOT NULL,
-    status status_enum NOT NULL DEFAULT 'Pending Approval', -- Correct default
+    status status_enum NOT NULL DEFAULT 'Pending Approval',
     reported_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     resolved_at TIMESTAMP WITH TIME ZONE,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- This column is now included
-    manager_acknowledged_at TIMESTAMP WITH TIME ZONE
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    manager_acknowledged_at TIMESTAMP WITH TIME ZONE -- This is the missing column
 );
 
 -- Table for Utilities
@@ -114,6 +121,17 @@ CREATE TABLE IF NOT EXISTS job_orders (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Table for Machine Inspections
+CREATE TABLE IF NOT EXISTS machine_inspections (
+    id SERIAL PRIMARY KEY,
+    machine_id INTEGER NOT NULL REFERENCES machines(id),
+    company_id INTEGER NOT NULL REFERENCES companies(id),
+    inspected_by_id INTEGER NOT NULL REFERENCES users(id),
+    status inspection_status_enum NOT NULL,
+    remarks TEXT,
+    inspected_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Table for Notification Logs
 CREATE TABLE IF NOT EXISTS notification_logs (
     id SERIAL PRIMARY KEY,
@@ -123,24 +141,6 @@ CREATE TABLE IF NOT EXISTS notification_logs (
     message_body TEXT,
     delivery_status VARCHAR(20) NOT NULL,
     sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
--- Create a custom type for inspection status
-DO $$ BEGIN
-    CREATE TYPE inspection_status_enum AS ENUM ('Okay', 'Not Okay');
-EXCEPTION
-    WHEN duplicate_object THEN null;
-END $$;
-
--- Table for Machine Inspections
-CREATE TABLE IF NOT EXISTS machine_inspections (
-    id SERIAL PRIMARY KEY,
-    machine_id INTEGER NOT NULL REFERENCES machines(id),
-    company_id INTEGER NOT NULL REFERENCES companies(id),
-    inspected_by_id INTEGER NOT NULL REFERENCES users(id),
-    status inspection_status_enum NOT NULL,
-    remarks TEXT, -- For the description if "Not Okay"
-    inspected_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Triggers (Must be at the very end)

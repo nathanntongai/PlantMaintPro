@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS breakdowns (
     reported_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     resolved_at TIMESTAMP WITH TIME ZONE,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- This column is now included
+    manager_acknowledged_at TIMESTAMP WITH TIME ZONE
 );
 
 -- Table for Utilities

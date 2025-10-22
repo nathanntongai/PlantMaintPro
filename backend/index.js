@@ -158,6 +158,9 @@ app.post('/whatsapp', async (req, res) => {
         // --- Acknowledgment Command Check (runs regardless of state) ---
         const ackMatch = msg_body.match(/^(ack|acknowledge)\s+(\d+)$/);
 
+        // Acknowledge Breakdown command (ack-b 12)
+        const ackBreakdownMatch = msg_body.match(/^(ack-b)\s+(\d+)$/);
+
         if (approvalMatch && ['Supervisor', 'Maintenance Manager'].includes(userRole)) {
              console.log("DEBUG: Matched approval/disapproval command.");
              const action = approvalMatch[1]; // 'approve' or 'disapprove'
@@ -220,7 +223,24 @@ app.post('/whatsapp', async (req, res) => {
                 }
             }
             await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
-        
+        // --- NEW: Handle Manager Acknowledgment of Completion ---
+        } else if (ackBreakdownMatch && ['Supervisor', 'Maintenance Manager'].includes(userRole)) {
+            console.log("DEBUG: Matched manager breakdown acknowledgment command.");
+            const breakdownIdToAck = parseInt(ackBreakdownMatch[2], 10);
+            
+            const ackUpdate = await db.query(
+                `UPDATE breakdowns SET manager_acknowledged_at = NOW() 
+                 WHERE id = $1 AND company_id = $2 AND status = 'Resolved' AND manager_acknowledged_at IS NULL RETURNING id`,
+                [breakdownIdToAck, user.company_id]
+            );
+
+            if (ackUpdate.rowCount > 0) {
+                finalResponseMessage = `✅ Completion of Breakdown #${breakdownIdToAck} has been acknowledged.`;
+            } else {
+                finalResponseMessage = `Could not acknowledge Breakdown #${breakdownIdToAck}. It may already be acknowledged or not yet resolved.`;
+            }
+            await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+
         } else { // --- Standard Conversational Flow ---
             const reset_words = ['hi', 'hello', 'menu', 'cancel', 'start'];
             if (reset_words.includes(msg_body) || currentState === 'IDLE') {
@@ -505,12 +525,15 @@ app.post('/whatsapp', async (req, res) => {
                             const supervisors = await db.query(`SELECT id, phone_number FROM users WHERE company_id = $1 AND role IN ('Supervisor', 'Maintenance Manager')`, [user.company_id]);
                             const originalReporterResult = await db.query(`SELECT u.id, u.phone_number FROM users u JOIN breakdowns b ON u.id = b.reported_by_id WHERE b.id = $1`, [breakdownIdToComplete]);
                             let messagesToSend = [];
-                            const supervisorMessage = `✅ Breakdown #${breakdownIdToComplete} (${machineName}) has been marked as '${finalStatus}' by ${user.name}.${rootCauseFixed ? '' : ' Root cause pending.'}`;
+                            const supervisorMessage = `✅ Breakdown #${breakdownIdToComplete} (${machineName}) marked as 'Resolved' by ${user.name}.\n\nPlease reply 'ack-b ${breakdownIdToComplete}' to acknowledge.`;
                             supervisors.rows.forEach(s => { if (s.phone_number) messagesToSend.push({ to: s.phone_number.replace('whatsapp:+', ''), text: supervisorMessage, recipientId: s.id }); });
+
+                            // Send info-only message to original reporter
                             if (originalReporterResult.rows.length > 0 && originalReporterResult.rows[0].phone_number && originalReporterResult.rows[0].id !== user.id) {
-                                const reporterMessage = `Update: The breakdown you reported for "${machineName}" (ID #${breakdownIdToComplete}) has been resolved${rootCauseFixed ? '.' : ' (root cause pending).'}`;
+                                const reporterMessage = `Update: The breakdown you reported for "${machineName}" (ID #${breakdownIdToComplete}) has been resolved.`;
                                 messagesToSend.push({ to: originalReporterResult.rows[0].phone_number.replace('whatsapp:+', ''), text: reporterMessage, recipientId: originalReporterResult.rows[0].id });
                             }
+                            
                             if (messagesToSend.length > 0) { sendBulkWhatsAppMessages(messagesToSend); }
                             
                             finalResponseMessage = `Thank you. Breakdown #${breakdownIdToComplete} has been updated.`;

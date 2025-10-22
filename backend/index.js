@@ -270,7 +270,30 @@ app.post('/whatsapp', async (req, res) => {
                                 }
                                 await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
                             }
-                            else if (['KPI_REPORT', 'AWAITING_PM_COMPLETION_CHOICE'].includes(selectedOption.nextState)) {
+                            else if (selectedOption.nextState === 'KPI_REPORT') {
+                                const kpiResult = await db.query(
+                                    `SELECT 
+                                        COUNT(*) AS total_breakdowns,
+                                        SUM(CASE WHEN status = 'Resolved' THEN (resolved_at - reported_at) ELSE NULL END) AS total_downtime_interval
+                                     FROM breakdowns
+                                     WHERE company_id = $1 AND reported_at >= NOW() - INTERVAL '30 days'`,
+                                    [user.company_id]
+                                );
+                                const kpis = kpiResult.rows[0];
+                                const totalBreakdowns = kpis.total_breakdowns || 0;
+                                let totalDowntime = "0 hours";
+                                if (kpis.total_downtime_interval) {
+                                    const d = kpis.total_downtime_interval;
+                                    const hours = (d.days || 0) * 24 + (d.hours || 0);
+                                    const minutes = d.minutes || 0;
+                                    totalDowntime = `${hours} hours, ${minutes} minutes`;
+                                }
+                                finalResponseMessage = `KPI Report (Last 30 Days):\n\n`;
+                                finalResponseMessage += `*Total Breakdowns:* ${totalBreakdowns}\n`;
+                                finalResponseMessage += `*Total Downtime:* ${totalDowntime}\n`;
+                                await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                            }
+                            else if (['AWAITING_PM_COMPLETION_CHOICE'].includes(selectedOption.nextState)) {
                                  finalResponseMessage = `You selected "${selectedOption.text}". This feature is under development.`;
                                  await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
                             }
@@ -410,7 +433,6 @@ app.post('/whatsapp', async (req, res) => {
                             if (!rootCauseFixed) {
                                 descriptionUpdate += "\n*Root cause was NOT attended to.*";
                                 console.log(`LOG: Breakdown ${breakdownIdToComplete} resolved, but root cause pending.`);
-                                // Create a new job order for the unattended root cause
                                 const jobOrderDescription = `Root cause from Breakdown #${breakdownIdToComplete}: ${rootCause}`;
                                 await db.query(`INSERT INTO job_orders (machine_id, company_id, requested_by_id, description) VALUES ($1, $2, $3, $4)`, [completedMachineId, user.company_id, user.id, jobOrderDescription]);
                             } else {
@@ -579,7 +601,7 @@ app.get('/utilities/:utilityId/readings', authenticateToken, authorize(MANAGER_A
 
 // Dashboard & Analytics
 app.get('/dashboard/kpis', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const activeBreakdownsQuery = "SELECT COUNT(*) FROM breakdowns WHERE company_id = $1 AND status NOT IN ('Resolved', 'Closed')"; const activeBreakdownsResult = await db.query(activeBreakdownsQuery, [companyId]); const machinesNeedingAttentionQuery = "SELECT COUNT(DISTINCT machine_id) FROM breakdowns WHERE company_id = $1 AND status NOT IN ('Resolved', 'Closed')"; const machinesNeedingAttentionResult = await db.query(machinesNeedingAttentionQuery, [companyId]); const kpis = { activeBreakdowns: parseInt(activeBreakdownsResult.rows[0].count, 10), machinesNeedingAttention: parseInt(machinesNeedingAttentionResult.rows[0].count, 10), }; res.json(kpis); } catch (error) { console.error('Error fetching KPIs:', error); res.status(500).json({ message: 'Internal server error' }); } });
-app.get('/charts/utility-consumption', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.params; const { utilityId, days } = req.query; const query = ` SELECT DATE_TRUNC('day', recorded_at AT TIME ZONE 'UTC') AS date, SUM(reading_value) AS "totalConsumption" FROM utility_readings WHERE utility_id = $1 AND company_id = $2 AND recorded_at >= NOW() - ($3 * INTERVAL '1 day') GROUP BY date ORDER BY date ASC `; const result = await db.query(query, [utilityId, companyId, days]); res.json(result.rows); } catch (error) { console.error('Error fetching chart data:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.get('/charts/utility-consumption', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const { utilityId, days } = req.query; const query = ` SELECT DATE_TRUNC('day', recorded_at AT TIME ZONE 'UTC') AS date, SUM(reading_value) AS "totalConsumption" FROM utility_readings WHERE utility_id = $1 AND company_id = $2 AND recorded_at >= NOW() - ($3 * INTERVAL '1 day') GROUP BY date ORDER BY date ASC `; const result = await db.query(query, [utilityId, companyId, days]); res.json(result.rows); } catch (error) { console.error('Error fetching chart data:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
 // Job Order Management
 app.get('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = `SELECT jo.*, m.name as machine_name, u_req.name as requested_by_name FROM job_orders jo JOIN machines m ON jo.machine_id = m.id JOIN users u_req ON jo.requested_by_id = u_req.id WHERE jo.company_id = $1 ORDER BY jo.requested_at DESC`; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching job orders:', error); res.status(500).json({ message: 'Internal server error' }); } });

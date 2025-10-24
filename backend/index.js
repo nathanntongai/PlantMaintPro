@@ -6,6 +6,7 @@ const cors = require('cors');
 const twilio = require('twilio');
 const cron = require('node-cron');
 const excel = require('exceljs');
+const multer = require('multer');
 const { authenticateToken, authorize } = require('./middleware/authMiddleware');
 const { sendBulkWhatsAppMessages } = require('./whatsappService');
 
@@ -16,6 +17,9 @@ const PORT = 4000;
 app.use(express.urlencoded({ extended: false })); // For Twilio webhooks
 app.use(express.json()); // For API requests
 app.use(cors()); // For allowing frontend access
+// Configure Multer for in-memory file storage
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 
 // --- HELPER & BACKGROUND JOBS ---
 
@@ -688,6 +692,58 @@ app.delete('/users/:id', authenticateToken, authorize(MANAGER_ONLY), async (req,
 // Machine Management
 app.get('/machines', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT * FROM machines WHERE company_id = $1 ORDER BY name ASC', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching machines:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/machines', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { name, location } = req.body; const { companyId } = req.user; const result = await db.query('INSERT INTO machines (company_id, name, location) VALUES ($1, $2, $3) RETURNING *', [companyId, name, location]); res.status(201).json({ message: 'Machine created!', machine: result.rows[0] }); } catch (error) { console.error('Error creating machine:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.post('/machines/upload', authenticateToken, authorize(MANAGER_ONLY), upload.single('file'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ message: 'No file uploaded.' });
+    }
+
+    const { companyId } = req.user;
+    const workbook = new excel.Workbook();
+
+    try {
+        // Read the file from the buffer
+        await workbook.xlsx.load(req.file.buffer);
+        const worksheet = workbook.getWorksheet('Equipment');
+
+        if (!worksheet) {
+            return res.status(400).json({ message: 'Invalid template: "Equipment" worksheet not found.' });
+        }
+
+        let addedCount = 0;
+        let errorCount = 0;
+        const newMachines = [];
+
+        // Loop through each row in the worksheet (row 1 is the header, so skip it)
+        for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+            const row = worksheet.getRow(rowNumber);
+            const machineName = row.getCell('A').value; // 'Machine Name (Required)'
+            const location = row.getCell('B').value || null; // 'Location (Optional)'
+
+            if (machineName) {
+                try {
+                    const result = await db.query(
+                        'INSERT INTO machines (company_id, name, location) VALUES ($1, $2, $3) RETURNING *',
+                        [companyId, machineName, location]
+                    );
+                    newMachines.push(result.rows[0]);
+                    addedCount++;
+                } catch (err) {
+                    console.error(`Failed to insert machine "${machineName}":`, err.message);
+                    errorCount++;
+                }
+            }
+        }
+
+        res.status(201).json({ 
+            message: `Upload complete: ${addedCount} machines added, ${errorCount} rows failed.`,
+            newMachines: newMachines
+        });
+
+    } catch (error) {
+        console.error('Error processing Excel file:', error);
+        res.status(500).json({ message: 'Error processing file.' });
+    }
+});
 app.patch('/machines/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { name, location } = req.body; const { companyId } = req.user; const result = await db.query('UPDATE machines SET name = $1, location = $2 WHERE id = $3 AND company_id = $4 RETURNING *', [name, location, id, companyId]); if (result.rows.length === 0) { return res.status(404).json({ message: 'Machine not found.' }); } res.json({ message: 'Machine updated!', machine: result.rows[0] }); } catch (error) { console.error('Error updating machine:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.delete('/machines/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { companyId } = req.user; const result = await db.query('DELETE FROM machines WHERE id = $1 AND company_id = $2', [id, companyId]); if (result.rowCount === 0) { return res.status(404).json({ message: 'Machine not found.' }); } res.status(200).json({ message: 'Machine deleted.' }); } catch (error) { if (error.code === '23503') { return res.status(400).json({ message: 'Cannot delete machine. It is linked to other records.' }); } console.error('Error deleting machine:', error); res.status(500).json({ message: 'Internal server error' }); } });
 

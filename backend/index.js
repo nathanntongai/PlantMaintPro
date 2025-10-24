@@ -815,6 +815,58 @@ app.get('/templates/equipment', authenticateToken, authorize(MANAGER_ONLY), asyn
     }
 });
 
+// User Import Template
+app.get('/templates/users', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => {
+    try {
+        const workbook = new excel.Workbook();
+        const worksheet = workbook.addWorksheet('Users');
+
+        // Define the columns for the template
+        worksheet.columns = [
+            { header: 'Full Name (Required)', key: 'name', width: 30 },
+            { header: 'Email (Required)', key: 'email', width: 30 },
+            { header: 'Initial Password (Required)', key: 'password', width: 30 },
+            { header: 'Role (Required)', key: 'role', width: 25 },
+            { header: 'Phone Number (Optional, e.g., 254...)', key: 'phone', width: 25 }
+        ];
+        
+        // Add a dropdown list for the 'Role' column
+        // This helps prevent data entry errors
+        worksheet.dataValidations.add('D2:D1000', {
+            type: 'list',
+            allowBlank: false,
+            formulae: ['"Maintenance Manager,Supervisor,Maintenance Technician,Operator"'],
+            showErrorMessage: true,
+            errorTitle: 'Invalid Role',
+            error: 'Please select a valid role from the dropdown list'
+        });
+
+        // Add an instructions sheet
+        const instructionsSheet = workbook.addWorksheet('Instructions');
+        instructionsSheet.mergeCells('A1:B5');
+        instructionsSheet.getCell('A1').value = 'Instructions:\n1. Do not change the column headers in the "Users" sheet.\n2. All columns are required except for Phone Number.\n3. For the "Role" column, please select a value from the dropdown list.\n4. Phone Number must include the country code (e.g., 254...)';
+        instructionsSheet.getCell('A1').alignment = { wrapText: true, vertical: 'top' };
+
+        // Set response headers to tell the browser it's an Excel file
+        res.setHeader(
+            'Content-Type',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+        res.setHeader(
+            'Content-Disposition',
+            'attachment; filename="users_template.xlsx"'
+        );
+
+        // Send the file
+        await workbook.xlsx.write(res);
+        res.end();
+
+    } catch (error) {
+        console.error('Error generating user template:', error);
+        res.status(500).json({ message: 'Error generating template' });
+    }
+});
+
 // --- SERVER STARTUP ---
 app.listen(PORT, () => {
   console.log(`>>>> BACKEND SERVER VERSION 2.0 IS RUNNING SUCCESSFULLY ON PORT ${PORT} <<<<`);

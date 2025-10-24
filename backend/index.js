@@ -5,6 +5,7 @@ const db = require('./db');
 const cors = require('cors');
 const twilio = require('twilio');
 const cron = require('node-cron');
+const excel = require('exceljs');
 const { authenticateToken, authorize } = require('./middleware/authMiddleware');
 const { sendBulkWhatsAppMessages } = require('./whatsappService');
 
@@ -720,6 +721,43 @@ app.post('/preventive-maintenance/:id/complete', authenticateToken, authorize(MA
 app.get('/inspections', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT ins.*, m.name as machine_name, u.name as inspected_by_name FROM machine_inspections ins JOIN machines m ON ins.machine_id = m.id JOIN users u ON ins.inspected_by_id = u.id WHERE ins.company_id = $1 ORDER BY ins.inspected_at DESC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching machine inspections:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/inspections', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { machineId, status, remarks } = req.body; const { userId, companyId } = req.user; if (!machineId || !status) { return res.status(400).json({ message: 'Machine ID and status are required.' }); } if (status === 'Not Okay' && !remarks) { return res.status(400).json({ message: 'Remarks are required if status is "Not Okay".' }); } const result = await db.query( `INSERT INTO machine_inspections (machine_id, company_id, inspected_by_id, status, remarks) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [machineId, companyId, userId, status, remarks || null] ); res.status(201).json({ message: 'Inspection logged successfully!', inspection: result.rows[0] }); } catch (error) { console.error('Error logging inspection:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
+// NEW: Template Download Endpoints
+app.get('/templates/equipment', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => {
+    try {
+        const workbook = new excel.Workbook();
+        const worksheet = workbook.addWorksheet('Equipment');
+
+        // Define the columns for the template
+        worksheet.columns = [
+            { header: 'Machine Name (Required)', key: 'name', width: 30 },
+            { header: 'Location (Optional)', key: 'location', width: 30 }
+        ];
+
+        // Add a second sheet for instructions
+        const instructionsSheet = workbook.addWorksheet('Instructions');
+        instructionsSheet.mergeCells('A1:B5');
+        instructionsSheet.getCell('A1').value = 'Instructions:\n1. Do not change the column headers in the "Equipment" sheet.\n2. "Machine Name" is required for every row.\n3. "Location" is optional.\n4. Save this file and upload it on the "Equipment" page.';
+        instructionsSheet.getCell('A1').alignment = { wrapText: true, vertical: 'top' };
+
+        // Set response headers to tell the browser it's an Excel file
+        res.setHeader(
+            'Content-Type',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+        res.setHeader(
+            'Content-Disposition',
+            'attachment; filename="equipment_template.xlsx"'
+        );
+
+        // Send the file
+        await workbook.xlsx.write(res);
+        res.end();
+
+    } catch (error) {
+        console.error('Error generating equipment template:', error);
+        res.status(500).json({ message: 'Error generating template' });
+    }
+});
 
 // --- SERVER STARTUP ---
 app.listen(PORT, () => {

@@ -686,6 +686,82 @@ const MANAGER_ONLY = ['Maintenance Manager'];
 // User Management
 app.get('/users', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT id, name, email, role, phone_number FROM users WHERE company_id = $1 ORDER BY name ASC', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching users:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/users', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { name, email, password, role, phoneNumber } = req.body; const { companyId } = req.user; const passwordHash = await bcrypt.hash(password, 10); const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null; const result = await db.query(`INSERT INTO users (company_id, name, email, password_hash, role, phone_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role, phone_number`, [companyId, name, email, passwordHash, role, formattedPhoneNumber]); res.status(201).json({ message: 'User created!', user: result.rows[0] }); } catch (error) { if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); } console.error('Error creating user:', error); res.status(500).json({ message: 'Internal server error' }); } });
+
+// Bulk User Upload via Excel
+app.post('/users/upload', authenticateToken, authorize(MANAGER_ONLY), upload.single('file'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ message: 'No file uploaded.' });
+    }
+
+    const { companyId } = req.user;
+    const workbook = new excel.Workbook();
+    
+    try {
+        await workbook.xlsx.load(req.file.buffer);
+        const worksheet = workbook.getWorksheet('Users');
+        
+        if (!worksheet) {
+            return res.status(400).json({ message: 'Invalid template: "Users" worksheet not found.' });
+        }
+        
+        let addedCount = 0;
+        let errorCount = 0;
+        let errors = [];
+        const newUsers = [];
+        const saltRounds = 10;
+
+        // Loop through each row in the worksheet (row 1 is the header)
+        for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+            const row = worksheet.getRow(rowNumber);
+            const name = row.getCell('A').value;
+            const email = row.getCell('B').value;
+            const password = row.getCell('C').value;
+            const role = row.getCell('D').value;
+            const phoneNumber = row.getCell('E').value;
+
+            // Basic validation
+            if (!name || !email || !password || !role) {
+                console.error(`Row ${rowNumber}: Skipping row due to missing required fields.`);
+                errors.push(`Row ${rowNumber}: Missing required fields.`);
+                errorCount++;
+                continue;
+            }
+
+            try {
+                // Hash the password from the Excel file
+                const passwordHash = await bcrypt.hash(password.toString(), saltRounds);
+                
+                // Format phone number
+                const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.toString().replace(/[^0-9]/g, '')}` : null;
+
+                const result = await db.query(
+                    `INSERT INTO users (company_id, name, email, password_hash, role, phone_number)
+                     VALUES ($1, $2, $3, $4, $5, $6)
+                     RETURNING id, name, email, role, phone_number`,
+                    [companyId, name, email, passwordHash, role, formattedPhoneNumber]
+                );
+                
+                newUsers.push(result.rows[0]);
+                addedCount++;
+            } catch (err) {
+                console.error(`Row ${rowNumber}: Failed to insert user "${email}":`, err.message);
+                errors.push(`Row ${rowNumber} (${email}): ${err.message}`);
+                errorCount++;
+            }
+        }
+
+        res.status(201).json({ 
+            message: `Upload complete: ${addedCount} users added, ${errorCount} rows failed.`,
+            newUsers: newUsers,
+            errors: errors
+        });
+
+    } catch (error) {
+        console.error('Error processing Excel file:', error);
+        res.status(500).json({ message: 'Error processing file.' });
+    }
+});
+
 app.patch('/users/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { name, email, role, phoneNumber } = req.body; const { companyId } = req.user; const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null; const result = await db.query(`UPDATE users SET name = $1, email = $2, role = $3, phone_number = $4 WHERE id = $5 AND company_id = $6 RETURNING id, name, email, role, phone_number`, [name, email, role, formattedPhoneNumber, id, companyId]); if (result.rows.length === 0) { return res.status(404).json({ message: "User not found." }); } res.json({ message: 'User updated!', user: result.rows[0] }); } catch (error) { if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); } console.error('Error updating user:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.delete('/users/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { companyId, userId } = req.user; if (id == userId) { return res.status(403).json({ message: "You cannot delete your own account." }); } const result = await db.query('DELETE FROM users WHERE id = $1 AND company_id = $2', [id, companyId]); if (result.rowCount === 0) { return res.status(404).json({ message: "User not found." }); } res.status(200).json({ message: 'User deleted.' }); } catch (error) { console.error('Error deleting user:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
@@ -844,7 +920,7 @@ app.get('/templates/users', authenticateToken, authorize(MANAGER_ONLY), async (r
         // Add an instructions sheet
         const instructionsSheet = workbook.addWorksheet('Instructions');
         instructionsSheet.mergeCells('A1:B5');
-        instructionsSheet.getCell('A1').value = 'Instructions:\n1. Do not change the column headers in the "Users" sheet.\n2. All columns are required except for Phone Number.\n3. For the "Role" column, please select a value from the dropdown list.\n4. Phone Number must include the country code (e.g., 254...)';
+        instructionsSheet.getCell('A1').value = 'Instructions:\n1. Do not change the column headers in the "Users" sheet.\n2. All columns are required except for Phone Number.\n3. For the "Role" column, please select a value from the dropdown list.\n4. Phone Number must include the country code (e.g., +254...)';
         instructionsSheet.getCell('A1').alignment = { wrapText: true, vertical: 'top' };
 
         // Set response headers to tell the browser it's an Excel file

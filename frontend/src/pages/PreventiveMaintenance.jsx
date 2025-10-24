@@ -1,5 +1,3 @@
-// src/pages/PreventiveMaintenance.jsx (with Download PM Template)
-
 import React, { useState, useEffect } from 'react';
 import api from '../api';
 import { useAuth } from '../context/AuthContext';
@@ -10,8 +8,8 @@ import {
 } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import EditIcon from '@mui/icons-material/Edit';
-import DownloadIcon from '@mui/icons-material/Download'; // Import icon
-import UploadIcon from '@mui/icons-material/Upload';     // Import icon
+import DownloadIcon from '@mui/icons-material/Download';
+import UploadIcon from '@mui/icons-material/Upload';
 
 function PreventiveMaintenance() {
   const { user } = useAuth();
@@ -19,9 +17,13 @@ function PreventiveMaintenance() {
   const [machines, setMachines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+  // State for the main form dialog (Add/Edit)
   const [open, setOpen] = useState(false);
   const [formData, setFormData] = useState({});
   const [editingTask, setEditingTask] = useState(null);
+  
+  // State for the delete confirmation dialog
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState(null);
 
@@ -87,7 +89,6 @@ function PreventiveMaintenance() {
     } catch (err) { setError(err.response?.data?.message || 'An error occurred.'); }
   };
   
-  // This is the function that was previously empty
   const handleCompleteTask = async (taskId) => {
     try {
       setError(''); // Clear previous errors
@@ -120,12 +121,13 @@ function PreventiveMaintenance() {
   const handleConfirmDelete = async () => {
     if (!taskToDelete) return;
     try {
+      setError('');
       await api.delete(`/preventive-maintenance/${taskToDelete.id}`);
       setTasks(tasks.filter(t => t.id !== taskToDelete.id)); // Remove from list
       handleConfirmClose();
     } catch (err) { setError(err.response?.data?.message || 'Failed to delete task.'); }
   };
-  
+
   // NEW: Function to download the PM template
   const handleDownloadTemplate = async () => {
     try {
@@ -140,7 +142,6 @@ function PreventiveMaintenance() {
     }
   };
 
-  // Do not render anything if the user is not authorized
   if (!user || !['Maintenance Manager', 'Supervisor'].includes(user.role)) {
      return (
         <Container maxWidth="lg">
@@ -156,7 +157,6 @@ function PreventiveMaintenance() {
         <Typography variant="h4" component="h1" gutterBottom>Preventive Maintenance Schedule</Typography>
         {user && user.role === 'Maintenance Manager' && (
           <Box>
-            {/* NEW: Download Template Button */}
             <Button 
                 variant="outlined" 
                 startIcon={<DownloadIcon />} 
@@ -165,11 +165,10 @@ function PreventiveMaintenance() {
             >
                 Template
             </Button>
-            {/* We'll add the Upload button's logic next */}
             <Button 
                 variant="outlined" 
                 startIcon={<UploadIcon />} 
-                // onClick={handleOpenUploadDialog} 
+                // onClick={handleOpenUploadDialog} // We will add this next
                 sx={{ mr: 2 }}
             >
                 Upload Excel
@@ -222,24 +221,24 @@ function PreventiveMaintenance() {
         tasks.length > 0 ? (
             tasks.map(task => (
                 <Card key={task.id} sx={{ mb: 2 }}>
-                    <CardContent>
-                        <Typography variant="h6">{task.task_description}</Typography>
-                        <Typography color="text.secondary">Machine: {task.machine_name}</Typography>
-                        <Typography variant="body2" sx={{ mt: 1 }}>Frequency: Every {task.frequency_days} days</Typography>
-                        <Typography variant="body2">Next Due: <strong>{new Date(task.next_due_date).toLocaleDateString()}</strong></Typography>
-                        {task.last_performed_at && (<Typography variant="caption" color="text.secondary">Last Performed: {new Date(task.last_performed_at).toLocaleDateString()}</Typography>)}
-                    </CardContent>
-                    <CardActions>
-                        {user && ['Maintenance Manager', 'Supervisor'].includes(user.role) && (
-                            <Button size="small" onClick={() => handleCompleteTask(task.id)}>Mark as Complete</Button>
-                        )}
-                        {user && user.role === 'Maintenance Manager' && (
-                        <>
-                            <IconButton onClick={() => handleOpenEditDialog(task)} color="primary"><EditIcon fontSize="small" /></IconButton>
-                            <IconButton onClick={() => handleDeleteClick(task)} color="error"><DeleteIcon fontSize="small" /></IconButton>
-                        </>
-                        )}
-                    </CardActions>
+                <CardContent>
+                    <Typography variant="h6">{task.task_description}</Typography>
+                    <Typography color="text.secondary">Machine: {task.machine_name}</Typography>
+                    <Typography variant="body2" sx={{ mt: 1 }}>Frequency: Every {task.frequency_days} days</Typography>
+                    <Typography variant="body2">Next Due: <strong>{new Date(task.next_due_date).toLocaleDateString()}</strong></Typography>
+                    {task.last_performed_at && (<Typography variant="caption" color="text.secondary">Last Performed: {new Date(task.last_performed_at).toLocaleDateString()}</Typography>)}
+                </CardContent>
+                <CardActions>
+                    {user && ['Maintenance Manager', 'Supervisor'].includes(user.role) && (
+                        <Button size="small" onClick={() => handleCompleteTask(task.id)}>Mark as Complete</Button>
+                    )}
+                    {user && user.role === 'Maintenance Manager' && (
+                    <>
+                        <IconButton onClick={() => handleOpenEditDialog(task)} color="primary"><EditIcon fontSize="small" /></IconButton>
+                        <IconButton onClick={() => handleDeleteClick(task)} color="error"><DeleteIcon fontSize="small" /></IconButton>
+                    </>
+                    )}
+                </CardActions>
                 </Card>
             ))
         ) : (

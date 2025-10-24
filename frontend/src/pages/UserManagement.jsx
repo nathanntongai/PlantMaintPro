@@ -204,7 +204,7 @@ function UserManagement() {
           <TextField autoFocus margin="dense" name="name" label="Full Name" type="text" fullWidth variant="standard" value={formData.name || ''} onChange={handleInputChange} />
           <TextField margin="dense" name="email" label="Email Address" type="email" fullWidth variant="standard" value={formData.email || ''} onChange={handleInputChange} />
           {!editingUser && <TextField margin="dense" name="password" label="Initial Password" type="password" fullWidth variant="standard" value={formData.password || ''} onChange={handleInputChange} />}
-          <TextField margin="dense" name="phoneNumber" label="Phone Number (e.g., 254...)" type="text" fullWidth variant="standard" value={formData.phoneNumber || ''} onChange={handleInputChange} />
+          <TextField margin="dense" name="phoneNumber" label="Phone Number (e.g., +254...)" type="text" fullWidth variant="standard" value={formData.phoneNumber || ''} onChange={handleInputChange} />
           <FormControl fullWidth margin="dense">
             <InputLabel id="role-select-label">Role</InputLabel>
             <Select labelId="role-select-label" name="role" value={formData.role || ''} label="Role" onChange={handleInputChange}>

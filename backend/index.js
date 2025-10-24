@@ -714,7 +714,8 @@ app.post('/users/upload', authenticateToken, authorize(MANAGER_ONLY), upload.sin
         for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
             const row = worksheet.getRow(rowNumber);
             const name = row.getCell('A').value;
-            const email = row.getCell('B').value;
+            // Check if it's a rich text object (a hyperlink) or just plain text
+            const email = (emailCell && typeof emailCell === 'object' && emailCell.text) ? emailCell.text : emailCell;
             const password = row.getCell('C').value;
             const role = row.getCell('D').value;
             const phoneNumber = row.getCell('E').value;
@@ -903,7 +904,7 @@ app.get('/templates/users', authenticateToken, authorize(MANAGER_ONLY), async (r
             { header: 'Email (Required)', key: 'email', width: 30 },
             { header: 'Initial Password (Required)', key: 'password', width: 30 },
             { header: 'Role (Required)', key: 'role', width: 25 },
-            { header: 'Phone Number (Optional, e.g., +254...)', key: 'phone', width: 25 }
+            { header: 'Phone Number (Optional, e.g., +254...)', key: 'phone', width: 25, numFmt: '@' }
         ];
         
         // Add a dropdown list for the 'Role' column

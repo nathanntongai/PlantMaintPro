@@ -2,7 +2,7 @@ import axios from 'axios';
 
 const api = axios.create({
   // Make sure this is the correct public URL for your BACKEND from the "Ports" tab
-  baseURL: 'https://refactored-disco-v57v9j64qrxfwq64-4000.app.github.dev/', 
+  baseURL: 'https://plantmaint-backend.onrender.com', 
 });
 
 api.interceptors.request.use(

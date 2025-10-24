@@ -714,8 +714,12 @@ app.post('/users/upload', authenticateToken, authorize(MANAGER_ONLY), upload.sin
         for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
             const row = worksheet.getRow(rowNumber);
             const name = row.getCell('A').value;
+
+            // Get the value from the email cell
+            const emailCell = row.getCell('B').value;
             // Check if it's a rich text object (a hyperlink) or just plain text
             const email = (emailCell && typeof emailCell === 'object' && emailCell.text) ? emailCell.text : emailCell;
+
             const password = row.getCell('C').value;
             const role = row.getCell('D').value;
             const phoneNumber = row.getCell('E').value;

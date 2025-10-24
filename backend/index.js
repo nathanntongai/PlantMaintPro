@@ -827,7 +827,7 @@ app.get('/templates/users', authenticateToken, authorize(MANAGER_ONLY), async (r
             { header: 'Email (Required)', key: 'email', width: 30 },
             { header: 'Initial Password (Required)', key: 'password', width: 30 },
             { header: 'Role (Required)', key: 'role', width: 25 },
-            { header: 'Phone Number (Optional, e.g., 254...)', key: 'phone', width: 25 }
+            { header: 'Phone Number (Optional, e.g., +254...)', key: 'phone', width: 25 }
         ];
         
         // Add a dropdown list for the 'Role' column

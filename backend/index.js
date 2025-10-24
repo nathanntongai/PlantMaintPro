@@ -948,6 +948,76 @@ app.get('/templates/users', authenticateToken, authorize(MANAGER_ONLY), async (r
     }
 });
 
+// Preventive Maintenance Template
+app.get('/templates/preventive-maintenance', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => {
+    try {
+        const { companyId } = req.user;
+        const workbook = new excel.Workbook();
+        const pmSheet = workbook.addWorksheet('PM Tasks');
+        const machineSheet = workbook.addWorksheet('MachineList'); // Hidden sheet
+
+        // --- MachineList Sheet Setup ---
+        // Fetch all machines for this company
+        const machinesResult = await db.query('SELECT id, name FROM machines WHERE company_id = $1 ORDER BY name ASC', [companyId]);
+        const machines = machinesResult.rows;
+
+        // Add headers and data to the hidden machine list sheet
+        machineSheet.columns = [
+            { header: 'MachineID', key: 'id', width: 10 },
+            { header: 'MachineName', key: 'name', width: 30 }
+        ];
+        machines.forEach(machine => {
+            machineSheet.addRow(machine);
+        });
+        
+        // Hide the sheet
+        machineSheet.state = 'hidden';
+
+        // --- PM Tasks Sheet Setup ---
+        pmSheet.columns = [
+            { header: 'Machine Name (Required)', key: 'machine', width: 30 },
+            { header: 'Task Description (Required)', key: 'description', width: 40 },
+            { header: 'Frequency (in days) (Required)', key: 'frequency', width: 25 },
+            { header: 'First Due Date (Required - YYYY-MM-DD)', key: 'startDate', width: 30, style: { numFmt: 'yyyy-mm-dd' } },
+        ];
+
+        // Add data validation dropdown for the machine column
+        if (machines.length > 0) {
+            pmSheet.dataValidations.add('A2:A1000', {
+                type: 'list',
+                allowBlank: false,
+                formulae: [`=MachineList!$B$2:$B$${machines.length + 1}`], // Points to the names in the hidden sheet
+                showErrorMessage: true,
+                errorTitle: 'Invalid Machine',
+                error: 'Please select a valid machine from the dropdown list'
+            });
+        }
+
+        // --- Instructions Sheet ---
+        const instructionsSheet = workbook.addWorksheet('Instructions');
+        instructionsSheet.mergeCells('A1:B5');
+        instructionsSheet.getCell('A1').value = 'Instructions:\n1. Do not change headers.\n2. On the "PM Tasks" sheet, select a machine from the dropdown for each task.\n3. All columns are required.\n4. Dates must be in YYYY-MM-DD format.';
+        instructionsSheet.getCell('A1').alignment = { wrapText: true, vertical: 'top' };
+
+        // Set response headers
+        res.setHeader(
+            'Content-Type',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+        res.setHeader(
+            'Content-Disposition',
+            'attachment; filename="pm_tasks_template.xlsx"'
+        );
+
+        await workbook.xlsx.write(res);
+        res.end();
+
+    } catch (error) {
+        console.error('Error generating PM template:', error);
+        res.status(500).json({ message: 'Error generating template' });
+    }
+});
+
 // --- SERVER STARTUP ---
 app.listen(PORT, () => {
   console.log(`>>>> BACKEND SERVER VERSION 2.0 IS RUNNING SUCCESSFULLY ON PORT ${PORT} <<<<`);

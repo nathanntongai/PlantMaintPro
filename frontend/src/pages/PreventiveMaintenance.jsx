@@ -1,10 +1,13 @@
+// src/pages/PreventiveMaintenance.jsx (Complete with PM Upload)
+
 import React, { useState, useEffect } from 'react';
 import api from '../api';
 import { useAuth } from '../context/AuthContext';
 import { saveAs } from 'file-saver';
 import { 
   Container, Typography, Card, CardContent, CardActions, CircularProgress, Alert, Button, Box, IconButton,
-  Dialog, DialogTitle, DialogContent, DialogActions, TextField, Select, MenuItem, FormControl, InputLabel, DialogContentText
+  Dialog, DialogTitle, DialogContent, DialogActions, TextField, Select, MenuItem, FormControl, InputLabel, DialogContentText,
+  Input // Import Input for file upload
 } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import EditIcon from '@mui/icons-material/Edit';
@@ -27,15 +30,21 @@ function PreventiveMaintenance() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState(null);
 
+  // NEW: State for Upload Dialog
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [uploadError, setUploadError] = useState('');
+  const [uploadSuccess, setUploadSuccess] = useState('');
+
+
   useEffect(() => {
-    // Only fetch data if user has permission to view the page
     if (user && ['Maintenance Manager', 'Supervisor'].includes(user.role)) {
         const fetchData = async () => {
           setLoading(true);
           try {
             const [tasksResponse, machinesResponse] = await Promise.all([
               api.get('/preventive-maintenance'), 
-              api.get('/machines') // Needed for the dropdown
+              api.get('/machines')
             ]);
             setTasks(tasksResponse.data);
             setMachines(machinesResponse.data);
@@ -50,7 +59,7 @@ function PreventiveMaintenance() {
         setError("You do not have permission to view this page.");
         setLoading(false);
     }
-  }, [user]); // Re-fetch if user changes
+  }, [user]);
 
   const handleOpenAddDialog = () => {
     setEditingTask(null);
@@ -91,15 +100,12 @@ function PreventiveMaintenance() {
   
   const handleCompleteTask = async (taskId) => {
     try {
-      setError(''); // Clear previous errors
+      setError('');
       const response = await api.post(`/preventive-maintenance/${taskId}/complete`);
-      
-      // This part updates the UI:
       setTasks(currentTasks => 
         currentTasks.map(task => 
-          task.id === taskId ? response.data.task : task // Replaces the old task with the updated one
+          task.id === taskId ? response.data.task : task
         )
-        // Re-sort the list by the new due date
         .sort((a, b) => new Date(a.next_due_date) - new Date(b.next_due_date))
       );
     } catch (err) {
@@ -123,22 +129,69 @@ function PreventiveMaintenance() {
     try {
       setError('');
       await api.delete(`/preventive-maintenance/${taskToDelete.id}`);
-      setTasks(tasks.filter(t => t.id !== taskToDelete.id)); // Remove from list
+      setTasks(tasks.filter(t => t.id !== taskToDelete.id));
       handleConfirmClose();
     } catch (err) { setError(err.response?.data?.message || 'Failed to delete task.'); }
   };
 
-  // NEW: Function to download the PM template
   const handleDownloadTemplate = async () => {
     try {
         setError('');
         const response = await api.get('/templates/preventive-maintenance', {
-            responseType: 'blob', // Expect a file
+            responseType: 'blob',
         });
         saveAs(response.data, 'pm_tasks_template.xlsx');
     } catch (err) {
         console.error('Error downloading template:', err);
         setError('Failed to download template.');
+    }
+  };
+
+  // --- NEW: Handlers for Upload Dialog ---
+  const handleOpenUploadDialog = () => {
+    setSelectedFile(null);
+    setUploadError('');
+    setUploadSuccess('');
+    setUploadOpen(true);
+  };
+  const handleCloseUploadDialog = () => setUploadOpen(false);
+  const handleFileChange = (event) => {
+    setSelectedFile(event.target.files[0]);
+  };
+  const handleUploadSubmit = async () => {
+    if (!selectedFile) {
+      setUploadError('Please select a file first.');
+      return;
+    }
+    
+    const formData = new FormData();
+    formData.append('file', selectedFile);
+
+    try {
+      setUploadError('');
+      setUploadSuccess('');
+      const response = await api.post('/preventive-maintenance/upload', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+      
+      setUploadSuccess(response.data.message);
+      // We need to fetch the machine names for the new tasks
+      const newTasksWithNames = response.data.newTasks.map(task => ({
+          ...task,
+          machine_name: machines.find(m => m.id === task.machine_id)?.name || 'Unknown'
+      }));
+      setTasks(currentTasks => [...newTasksWithNames, ...currentTasks].sort((a,b) => new Date(a.next_due_date) - new Date(b.next_due_date)));
+      setSelectedFile(null);
+      
+      setTimeout(() => {
+         handleCloseUploadDialog();
+      }, 2000);
+
+    } catch (err) {
+      console.error('Error uploading file:', err);
+      setUploadError(err.response?.data?.message || 'File upload failed.');
     }
   };
 
@@ -168,7 +221,7 @@ function PreventiveMaintenance() {
             <Button 
                 variant="outlined" 
                 startIcon={<UploadIcon />} 
-                // onClick={handleOpenUploadDialog} // We will add this next
+                onClick={handleOpenUploadDialog} // <-- This is now active
                 sx={{ mr: 2 }}
             >
                 Upload Excel
@@ -211,6 +264,28 @@ function PreventiveMaintenance() {
         <DialogActions>
             <Button onClick={handleConfirmClose}>Cancel</Button>
             <Button onClick={handleConfirmDelete} color="error">Delete</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* NEW: Upload Excel Dialog */}
+      <Dialog open={uploadOpen} onClose={handleCloseUploadDialog}>
+        <DialogTitle>Upload PM Tasks from Excel</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Select the completed `pm_tasks_template.xlsx` file to upload.
+          </DialogContentText>
+          <Input
+            type="file"
+            onChange={handleFileChange}
+            sx={{ mt: 2 }}
+            inputProps={{ accept: ".xlsx" }}
+          />
+          {uploadError && <Alert severity="error" sx={{ mt: 2 }}>{uploadError}</Alert>}
+          {uploadSuccess && <Alert severity="success" sx={{ mt: 2 }}>{uploadSuccess}</Alert>}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseUploadDialog}>Close</Button>
+          <Button onClick={handleUploadSubmit} variant="contained">Upload File</Button>
         </DialogActions>
       </Dialog>
 

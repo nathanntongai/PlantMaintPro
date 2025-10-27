@@ -854,6 +854,90 @@ app.patch('/preventive-maintenance/:id', authenticateToken, authorize(MANAGER_ON
 app.delete('/preventive-maintenance/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { companyId } = req.user; const result = await db.query('DELETE FROM preventive_maintenance_tasks WHERE id = $1 AND company_id = $2', [id, companyId]); if (result.rowCount === 0) { return res.status(404).json({ message: 'Task not found.' }); } res.status(200).json({ message: 'Task deleted.' }); } catch (error) { console.error('Error deleting task:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/preventive-maintenance/:id/complete', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { id } = req.params; const { companyId } = req.user; const taskRes = await db.query('SELECT frequency_days FROM preventive_maintenance_tasks WHERE id = $1 AND company_id = $2', [id, companyId]); if (taskRes.rows.length === 0) { return res.status(404).json({ message: 'Task not found.' }); } const { frequency_days } = taskRes.rows[0]; const query = ` UPDATE preventive_maintenance_tasks SET last_performed_at = NOW(), next_due_date = (NOW() + ($1 * INTERVAL '1 day'))::DATE WHERE id = $2 AND company_id = $3 RETURNING * `; const result = await db.query(query, [frequency_days, id, companyId]); const updatedTaskQuery = ` SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.id = $1 `; const finalResult = await db.query(updatedTaskQuery, [id]); res.json({ message: 'Task marked as complete!', task: finalResult.rows[0] }); } catch (error) { console.error('Error completing task:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
+// Bulk Preventive Maintenance Upload via Excel
+app.post('/preventive-maintenance/upload', authenticateToken, authorize(MANAGER_ONLY), upload.single('file'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ message: 'No file uploaded.' });
+    }
+
+    const { companyId } = req.user;
+    const workbook = new excel.Workbook();
+    
+    try {
+        await workbook.xlsx.load(req.file.buffer);
+        const worksheet = workbook.getWorksheet('PM Tasks');
+        
+        if (!worksheet) {
+            return res.status(400).json({ message: 'Invalid template: "PM Tasks" worksheet not found.' });
+        }
+        
+        // Step 1: Create a lookup map of all machines in this company
+        // This is much faster than querying the DB for every row in the loop.
+        const machinesResult = await db.query('SELECT id, name FROM machines WHERE company_id = $1', [companyId]);
+        const machineMap = new Map();
+        machinesResult.rows.forEach(machine => {
+            // Store as { "machine name lowercase": machine_id }
+            machineMap.set(machine.name.toLowerCase(), machine.id);
+        });
+
+        let addedCount = 0;
+        let errorCount = 0;
+        let errors = [];
+        const newTasks = [];
+
+        // Loop through each row (skip header)
+        for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+            const row = worksheet.getRow(rowNumber);
+            
+            const machineName = row.getCell('A').value;
+            const taskDescription = row.getCell('B').value;
+            const frequencyDays = parseInt(row.getCell('C').value, 10);
+            const startDate = row.getCell('D').value; // Excel date
+
+            // Validation
+            if (!machineName || !taskDescription || !frequencyDays || !startDate) {
+                errors.push(`Row ${rowNumber}: Skipping row due to missing required fields.`);
+                errorCount++;
+                continue;
+            }
+
+            // Find the machine ID from our map
+            const machineId = machineMap.get(machineName.toLowerCase());
+
+            if (!machineId) {
+                errors.push(`Row ${rowNumber}: Machine "${machineName}" not found. Skipping.`);
+                errorCount++;
+                continue;
+            }
+
+            try {
+                // Insert the new PM task
+                const result = await db.query(
+                    `INSERT INTO preventive_maintenance_tasks (machine_id, company_id, task_description, frequency_days, next_due_date)
+                     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+                    [machineId, companyId, taskDescription, frequencyDays, startDate]
+                );
+                newTasks.push(result.rows[0]);
+                addedCount++;
+            } catch (err) {
+                console.error(`Row ${rowNumber}: Failed to insert task "${taskDescription}":`, err.message);
+                errors.push(`Row ${rowNumber} (${taskDescription}): ${err.message}`);
+                errorCount++;
+            }
+        }
+
+        res.status(201).json({ 
+            message: `Upload complete: ${addedCount} tasks added, ${errorCount} rows failed.`,
+            newTasks: newTasks,
+            errors: errors
+        });
+
+    } catch (error) {
+        console.error('Error processing PM tasks file:', error);
+        res.status(500).json({ message: 'Error processing file.' });
+    }
+});
+
 // Machine Inspection Management
 app.get('/inspections', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT ins.*, m.name as machine_name, u.name as inspected_by_name FROM machine_inspections ins JOIN machines m ON ins.machine_id = m.id JOIN users u ON ins.inspected_by_id = u.id WHERE ins.company_id = $1 ORDER BY ins.inspected_at DESC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching machine inspections:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/inspections', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { machineId, status, remarks } = req.body; const { userId, companyId } = req.user; if (!machineId || !status) { return res.status(400).json({ message: 'Machine ID and status are required.' }); } if (status === 'Not Okay' && !remarks) { return res.status(400).json({ message: 'Remarks are required if status is "Not Okay".' }); } const result = await db.query( `INSERT INTO machine_inspections (machine_id, company_id, inspected_by_id, status, remarks) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [machineId, companyId, userId, status, remarks || null] ); res.status(201).json({ message: 'Inspection logged successfully!', inspection: result.rows[0] }); } catch (error) { console.error('Error logging inspection:', error); res.status(500).json({ message: 'Internal server error' }); } });

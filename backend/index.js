@@ -727,6 +727,71 @@ app.post('/preventive-maintenance/:id/complete', authenticateToken, authorize(MA
 app.get('/inspections', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT ins.*, m.name as machine_name, u.name as inspected_by_name FROM machine_inspections ins JOIN machines m ON ins.machine_id = m.id JOIN users u ON ins.inspected_by_id = u.id WHERE ins.company_id = $1 ORDER BY ins.inspected_at DESC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching machine inspections:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/inspections', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { machineId, status, remarks } = req.body; const { userId, companyId } = req.user; if (!machineId || !status) { return res.status(400).json({ message: 'Machine ID and status are required.' }); } if (status === 'Not Okay' && !remarks) { return res.status(400).json({ message: 'Remarks are required if status is "Not Okay".' }); } const result = await db.query( `INSERT INTO machine_inspections (machine_id, company_id, inspected_by_id, status, remarks) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [machineId, companyId, userId, status, remarks || null] ); res.status(201).json({ message: 'Inspection logged successfully!', inspection: result.rows[0] }); } catch (error) { console.error('Error logging inspection:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
+// --- AUTOMATED BACKGROUND JOBS ---
+
+// Schedule a job to run every day at 8:00 AM
+cron.schedule('* * * * *', async () => {
+    console.log('Running daily check for PM task reminders...');
+    try {
+        // Find tasks due in the next 3 days
+        const tasksToRemind = await db.query(
+            `SELECT pmt.id, pmt.task_description, pmt.next_due_date, m.name as machine_name, pmt.company_id
+             FROM preventive_maintenance_tasks pmt
+             JOIN machines m ON pmt.machine_id = m.id
+             WHERE pmt.next_due_date BETWEEN CURRENT_DATE AND (CURRENT_DATE + INTERVAL '3 days')
+               AND (pmt.last_performed_at IS NULL OR pmt.last_performed_at < (pmt.next_due_date - pmt.frequency_days * INTERVAL '1 day'))`
+        );
+
+        if (tasksToRemind.rows.length === 0) {
+            console.log('No PM tasks due for reminders today.');
+            return;
+        }
+
+        console.log(`Found ${tasksToRemind.rows.length} PM tasks due soon.`);
+        
+        const tasksByCompany = {};
+        for (const task of tasksToRemind.rows) {
+            if (!tasksByCompany[task.company_id]) {
+                tasksByCompany[task.company_id] = [];
+            }
+            tasksByCompany[task.company_id].push(task);
+        }
+
+        for (const [companyId, tasks] of Object.entries(tasksByCompany)) {
+            const recipients = await db.query(
+                `SELECT id, phone_number FROM users WHERE company_id = $1 AND role IN ('Maintenance Manager', 'Maintenance Technician')`,
+                [companyId]
+            );
+            
+            if (recipients.rows.length > 0) {
+                let reminderMessage = "🔔 Preventive Maintenance Reminder 🔔\nThe following tasks are due soon:\n\n";
+                tasks.forEach(task => {
+                    reminderMessage += `*${new Date(task.next_due_date).toLocaleDateString()}* - ${task.machine_name}:\n  ${task.task_description}\n\n`;
+                });
+
+                const messagesToSend = recipients.rows
+                    .filter(r => r.phone_number)
+                    .map(r => ({
+                        to: r.phone_number.replace('whatsapp:+', ''),
+                        text: reminderMessage,
+                        recipientId: r.id
+                    }));
+                
+                if(messagesToSend.length > 0) {
+                   await sendBulkWhatsAppMessages(messagesToSend);
+                   console.log(`Sent PM reminders to ${messagesToSend.length} users for company ${companyId}.`);
+                }
+            }
+        }
+
+    } catch (error) {
+        console.error("Error running PM reminder cron job:", error);
+    }
+}, {
+    scheduled: true,
+    timezone: "Africa/Nairobi" // EAT Timezone
+});
+
 // --- SERVER STARTUP ---
 app.listen(PORT, () => {
   console.log(`>>>> BACKEND SERVER VERSION 2.0 IS RUNNING SUCCESSFULLY ON PORT ${PORT} <<<<`);

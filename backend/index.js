@@ -710,6 +710,77 @@ app.get('/utilities/:utilityId/readings', authenticateToken, authorize(MANAGER_A
 app.get('/dashboard/kpis', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const activeBreakdownsQuery = "SELECT COUNT(*) FROM breakdowns WHERE company_id = $1 AND status NOT IN ('Resolved', 'Closed')"; const activeBreakdownsResult = await db.query(activeBreakdownsQuery, [companyId]); const machinesNeedingAttentionQuery = "SELECT COUNT(DISTINCT machine_id) FROM breakdowns WHERE company_id = $1 AND status NOT IN ('Resolved', 'Closed')"; const machinesNeedingAttentionResult = await db.query(machinesNeedingAttentionQuery, [companyId]); const kpis = { activeBreakdowns: parseInt(activeBreakdownsResult.rows[0].count, 10), machinesNeedingAttention: parseInt(machinesNeedingAttentionResult.rows[0].count, 10), }; res.json(kpis); } catch (error) { console.error('Error fetching KPIs:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.get('/charts/utility-consumption', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const { utilityId, days } = req.query; const query = ` SELECT DATE_TRUNC('day', recorded_at AT TIME ZONE 'UTC') AS date, SUM(reading_value) AS "totalConsumption" FROM utility_readings WHERE utility_id = $1 AND company_id = $2 AND recorded_at >= NOW() - ($3 * INTERVAL '1 day') GROUP BY date ORDER BY date ASC `; const result = await db.query(query, [utilityId, companyId, days]); res.json(result.rows); } catch (error) { console.error('Error fetching chart data:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
+// Add this new endpoint to backend/index.js
+
+app.get('/reports/breakdowns', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => {
+    try {
+        const { companyId } = req.user;
+
+        // 1. Fetch the data from the database
+        // This query joins breakdowns with machines and users to get readable names
+        const query = `
+            SELECT 
+                b.id, 
+                b.status,
+                b.description,
+                m.name as machine_name,
+                u_rep.name as reported_by,
+                b.reported_at,
+                u_app.name as approved_by,
+                u_ass.name as assigned_to,
+                b.resolved_at,
+                b.manager_acknowledged_at
+            FROM breakdowns b
+            JOIN machines m ON b.machine_id = m.id
+            JOIN users u_rep ON b.reported_by_id = u_rep.id
+            LEFT JOIN users u_app ON b.approved_by_id = u_app.id
+            LEFT JOIN users u_ass ON b.assigned_to_id = u_ass.id
+            WHERE b.company_id = $1
+            ORDER BY b.reported_at DESC
+        `;
+        const { rows } = await db.query(query, [companyId]);
+
+        // 2. Create the Excel workbook and worksheet
+        const workbook = new excel.Workbook();
+        const worksheet = workbook.addWorksheet('Breakdown Report');
+
+        // 3. Define the columns
+        worksheet.columns = [
+            { header: 'ID', key: 'id', width: 10 },
+            { header: 'Status', key: 'status', width: 20 },
+            { header: 'Machine', key: 'machine_name', width: 30 },
+            { header: 'Description', key: 'description', width: 50 },
+            { header: 'Reported By', key: 'reported_by', width: 25 },
+            { header: 'Reported At', key: 'reported_at', width: 25, style: { numFmt: 'yyyy-mm-dd hh:mm:ss' } },
+            { header: 'Approved By', key: 'approved_by', width: 25 },
+            { header: 'Assigned To', key: 'assigned_to', width: 25 },
+            { header: 'Resolved At', key: 'resolved_at', width: 25, style: { numFmt: 'yyyy-mm-dd hh:mm:ss' } },
+            { header: 'Manager Acknowledged', key: 'manager_acknowledged_at', width: 25, style: { numFmt: 'yyyy-mm-dd hh:mm:ss' } }
+        ];
+
+        // 4. Add the data rows to the sheet
+        worksheet.addRows(rows);
+
+        // 5. Set response headers to tell the browser it's an Excel file
+        res.setHeader(
+            'Content-Type',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+        res.setHeader(
+            'Content-Disposition',
+            `attachment; filename="breakdown_report_${new Date().toISOString().split('T')[0]}.xlsx"`
+        );
+
+        // 6. Send the file
+        await workbook.xlsx.write(res);
+        res.end();
+
+    } catch (error) {
+        console.error('Error generating breakdown report:', error);
+        res.status(500).json({ message: 'Error generating report' });
+    }
+});
+
 // Job Order Management
 app.get('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = `SELECT jo.*, m.name as machine_name, u_req.name as requested_by_name FROM job_orders jo JOIN machines m ON jo.machine_id = m.id JOIN users u_req ON jo.requested_by_id = u_req.id WHERE jo.company_id = $1 ORDER BY jo.requested_at DESC`; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching job orders:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { machineId, description } = req.body; const { userId, companyId } = req.user; const machineCheck = await db.query('SELECT id FROM machines WHERE id = $1 AND company_id = $2', [machineId, companyId]); if (machineCheck.rows.length === 0) { return res.status(404).json({ message: 'Machine not found.' }); } const result = await db.query(`INSERT INTO job_orders (machine_id, company_id, requested_by_id, description) VALUES ($1, $2, $3, $4) RETURNING *`, [machineId, companyId, userId, description]); res.status(201).json({ message: 'Job Order created!', jobOrder: result.rows[0] }); } catch (error) { console.error('Error creating job order:', error); res.status(500).json({ message: 'Internal server error' }); } });

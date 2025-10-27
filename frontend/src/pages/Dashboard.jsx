@@ -3,12 +3,14 @@ import { useAuth } from '../context/AuthContext';
 import api from '../api';
 import KpiCard from '../components/KpiCard';
 import LineChart from '../components/LineChart';
-import {
+import { saveAs } from 'file-saver'; // Import file-saver
+import { 
   Container, Typography, Button, Box, Card, CardContent, CardActions,
   CircularProgress, Alert, Grid, Paper,
   Dialog, DialogTitle, DialogContent, DialogActions, TextField,
   Select, MenuItem, FormControl, InputLabel
 } from '@mui/material';
+import DownloadIcon from '@mui/icons-material/Download'; // Import icon
 
 function Dashboard() {
   const { user, logout } = useAuth(); // Get the full user object
@@ -143,16 +145,41 @@ function Dashboard() {
     }
   };
 
+  // NEW: Function to download the Breakdown report
+  const handleDownloadReport = async () => {
+    try {
+      setError('');
+      const response = await api.get('/reports/breakdowns', {
+        responseType: 'blob', // Expect a file
+      });
+      const filename = `breakdown_report_${new Date().toISOString().split('T')[0]}.xlsx`;
+      saveAs(response.data, filename);
+    } catch (err) {
+      console.error('Error downloading report:', err);
+      setError('Failed to download report.');
+    }
+  };
+
   return (
     <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 4 }}>
         <Typography variant="h4" component="h1">Factory Overview</Typography>
         <Box>
-            {/* Report Breakdown Button - visible to all logged-in users */}
+            {/* NEW: Download Report Button (visible to managers/supervisors) */}
+            {user && ['Maintenance Manager', 'Supervisor'].includes(user.role) && (
+              <Button 
+                variant="outlined" 
+                startIcon={<DownloadIcon />} 
+                onClick={handleDownloadReport} 
+                sx={{ mr: 2 }}
+              >
+                Download Report
+              </Button>
+            )}
             {user && (
-            <Button variant="contained" color="error" onClick={handleOpenBreakdownDialog} sx={{ mr: 2 }}>
-                Report Breakdown
-            </Button>
+               <Button variant="contained" color="error" onClick={handleOpenBreakdownDialog} sx={{ mr: 2 }}>
+                   Report Breakdown
+               </Button>
             )}
             <Button variant="outlined" onClick={logout}>Logout</Button>
         </Box>

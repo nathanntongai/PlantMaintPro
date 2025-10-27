@@ -730,7 +730,7 @@ app.post('/inspections', authenticateToken, authorize(ALL_ROLES), async (req, re
 // --- AUTOMATED BACKGROUND JOBS ---
 
 // Schedule a job to run every day at 8:00 AM
-cron.schedule('* * * * *', async () => {
+cron.schedule('0 8 * * *', async () => {
     console.log('Running daily check for PM task reminders...');
     try {
         // Find tasks due in the next 3 days

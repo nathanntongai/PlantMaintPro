@@ -163,7 +163,7 @@ app.post('/whatsapp', async (req, res) => {
         // --- Acknowledgment Command Check (runs regardless of state) ---
         const ackMatch = msg_body.match(/^(ack|acknowledge)\s+(\d+)$/);
 
-        // Acknowledge Breakdown command (ack-b 12)
+        // --- Manager Acknowledgment Command Check (runs regardless of state) ---
         const ackBreakdownMatch = msg_body.match(/^(ack-b)\s+(\d+)$/);
 
         if (approvalMatch && ['Supervisor', 'Maintenance Manager'].includes(userRole)) {
@@ -194,7 +194,6 @@ app.post('/whatsapp', async (req, res) => {
              await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
         
         } else if (ackMatch && userRole === 'Maintenance Technician') {
-            // NEW: Handle the 'ack <id>' command
             console.log("DEBUG: Matched acknowledgment command.");
             const breakdownIdToAck = parseInt(ackMatch[2], 10);
 
@@ -228,7 +227,7 @@ app.post('/whatsapp', async (req, res) => {
                 }
             }
             await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
-        // --- NEW: Handle Manager Acknowledgment of Completion ---
+        
         } else if (ackBreakdownMatch && ['Supervisor', 'Maintenance Manager'].includes(userRole)) {
             console.log("DEBUG: Matched manager breakdown acknowledgment command.");
             const breakdownIdToAck = parseInt(ackBreakdownMatch[2], 10);
@@ -530,15 +529,12 @@ app.post('/whatsapp', async (req, res) => {
                             const supervisors = await db.query(`SELECT id, phone_number FROM users WHERE company_id = $1 AND role IN ('Supervisor', 'Maintenance Manager')`, [user.company_id]);
                             const originalReporterResult = await db.query(`SELECT u.id, u.phone_number FROM users u JOIN breakdowns b ON u.id = b.reported_by_id WHERE b.id = $1`, [breakdownIdToComplete]);
                             let messagesToSend = [];
-                            const supervisorMessage = `✅ Breakdown #${breakdownIdToComplete} (${machineName}) marked as 'Resolved' by ${user.name}.\n\nPlease reply 'ack-b ${breakdownIdToComplete}' to acknowledge.`;
+                            const supervisorMessage = `✅ Breakdown #${breakdownIdToComplete} (${machineName}) has been marked as '${finalStatus}' by ${user.name}.${rootCauseFixed ? '' : ' Root cause pending.'}\n\nPlease reply 'ack-b ${breakdownIdToComplete}' to acknowledge.`;
                             supervisors.rows.forEach(s => { if (s.phone_number) messagesToSend.push({ to: s.phone_number.replace('whatsapp:+', ''), text: supervisorMessage, recipientId: s.id }); });
-
-                            // Send info-only message to original reporter
                             if (originalReporterResult.rows.length > 0 && originalReporterResult.rows[0].phone_number && originalReporterResult.rows[0].id !== user.id) {
-                                const reporterMessage = `Update: The breakdown you reported for "${machineName}" (ID #${breakdownIdToComplete}) has been resolved.`;
+                                const reporterMessage = `Update: The breakdown you reported for "${machineName}" (ID #${breakdownIdToComplete}) has been resolved${rootCauseFixed ? '.' : ' (root cause pending).'}`;
                                 messagesToSend.push({ to: originalReporterResult.rows[0].phone_number.replace('whatsapp:+', ''), text: reporterMessage, recipientId: originalReporterResult.rows[0].id });
                             }
-                            
                             if (messagesToSend.length > 0) { sendBulkWhatsAppMessages(messagesToSend); }
                             
                             finalResponseMessage = `Thank you. Breakdown #${breakdownIdToComplete} has been updated.`;
@@ -686,145 +682,16 @@ const MANAGER_ONLY = ['Maintenance Manager'];
 // User Management
 app.get('/users', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT id, name, email, role, phone_number FROM users WHERE company_id = $1 ORDER BY name ASC', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching users:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/users', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { name, email, password, role, phoneNumber } = req.body; const { companyId } = req.user; const passwordHash = await bcrypt.hash(password, 10); const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null; const result = await db.query(`INSERT INTO users (company_id, name, email, password_hash, role, phone_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role, phone_number`, [companyId, name, email, passwordHash, role, formattedPhoneNumber]); res.status(201).json({ message: 'User created!', user: result.rows[0] }); } catch (error) { if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); } console.error('Error creating user:', error); res.status(500).json({ message: 'Internal server error' }); } });
-
-// Bulk User Upload via Excel
-app.post('/users/upload', authenticateToken, authorize(MANAGER_ONLY), upload.single('file'), async (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ message: 'No file uploaded.' });
-    }
-
-    const { companyId } = req.user;
-    const workbook = new excel.Workbook();
-    
-    try {
-        await workbook.xlsx.load(req.file.buffer);
-        const worksheet = workbook.getWorksheet('Users');
-        
-        if (!worksheet) {
-            return res.status(400).json({ message: 'Invalid template: "Users" worksheet not found.' });
-        }
-        
-        let addedCount = 0;
-        let errorCount = 0;
-        let errors = [];
-        const newUsers = [];
-        const saltRounds = 10;
-
-        // Loop through each row in the worksheet (row 1 is the header)
-        for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
-            const row = worksheet.getRow(rowNumber);
-            const name = row.getCell('A').value;
-
-            // Get the value from the email cell
-            const emailCell = row.getCell('B').value;
-            // Check if it's a rich text object (a hyperlink) or just plain text
-            const email = (emailCell && typeof emailCell === 'object' && emailCell.text) ? emailCell.text : emailCell;
-
-            const password = row.getCell('C').value;
-            const role = row.getCell('D').value;
-            const phoneNumber = row.getCell('E').value;
-
-            // Basic validation
-            if (!name || !email || !password || !role) {
-                console.error(`Row ${rowNumber}: Skipping row due to missing required fields.`);
-                errors.push(`Row ${rowNumber}: Missing required fields.`);
-                errorCount++;
-                continue;
-            }
-
-            try {
-                // Hash the password from the Excel file
-                const passwordHash = await bcrypt.hash(password.toString(), saltRounds);
-                
-                // Format phone number
-                const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.toString().replace(/[^0-9]/g, '')}` : null;
-
-                const result = await db.query(
-                    `INSERT INTO users (company_id, name, email, password_hash, role, phone_number)
-                     VALUES ($1, $2, $3, $4, $5, $6)
-                     RETURNING id, name, email, role, phone_number`,
-                    [companyId, name, email, passwordHash, role, formattedPhoneNumber]
-                );
-                
-                newUsers.push(result.rows[0]);
-                addedCount++;
-            } catch (err) {
-                console.error(`Row ${rowNumber}: Failed to insert user "${email}":`, err.message);
-                errors.push(`Row ${rowNumber} (${email}): ${err.message}`);
-                errorCount++;
-            }
-        }
-
-        res.status(201).json({ 
-            message: `Upload complete: ${addedCount} users added, ${errorCount} rows failed.`,
-            newUsers: newUsers,
-            errors: errors
-        });
-
-    } catch (error) {
-        console.error('Error processing Excel file:', error);
-        res.status(500).json({ message: 'Error processing file.' });
-    }
-});
-
+app.get('/templates/users', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const workbook = new excel.Workbook(); const worksheet = workbook.addWorksheet('Users'); worksheet.columns = [ { header: 'Full Name (Required)', key: 'name', width: 30 }, { header: 'Email (Required)', key: 'email', width: 30 }, { header: 'Initial Password (Required)', key: 'password', width: 30 }, { header: 'Role (Required)', key: 'role', width: 25 }, { header: 'Phone Number (Optional, e.g., 254...)', key: 'phone', width: 25, numFmt: '@' } ]; worksheet.dataValidations.add('D2:D1000', { type: 'list', allowBlank: false, formulae: ['"Maintenance Manager,Supervisor,Maintenance Technician,Operator"'], showErrorMessage: true, errorTitle: 'Invalid Role', error: 'Please select a valid role from the dropdown list' }); const instructionsSheet = workbook.addWorksheet('Instructions'); instructionsSheet.mergeCells('A1:B5'); instructionsSheet.getCell('A1').value = 'Instructions:\n1. Do not change the column headers in the "Users" sheet.\n2. All columns are required except for Phone Number.\n3. For the "Role" column, please select a value from the dropdown list.\n4. Phone Number must include the country code (e.g., 254...)'; instructionsSheet.getCell('A1').alignment = { wrapText: true, vertical: 'top' }; res.setHeader( 'Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ); res.setHeader( 'Content-Disposition', 'attachment; filename="users_template.xlsx"' ); await workbook.xlsx.write(res); res.end(); } catch (error) { console.error('Error generating user template:', error); res.status(500).json({ message: 'Error generating template' }); } });
+app.post('/users/upload', authenticateToken, authorize(MANAGER_ONLY), upload.single('file'), async (req, res) => { if (!req.file) { return res.status(400).json({ message: 'No file uploaded.' }); } const { companyId } = req.user; const workbook = new excel.Workbook(); try { await workbook.xlsx.load(req.file.buffer); const worksheet = workbook.getWorksheet('Users'); if (!worksheet) { return res.status(400).json({ message: 'Invalid template: "Users" worksheet not found.' }); } let addedCount = 0; let errorCount = 0; let errors = []; const newUsers = []; const saltRounds = 10; for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) { const row = worksheet.getRow(rowNumber); const name = row.getCell('A').value; const emailCell = row.getCell('B').value; const email = (emailCell && typeof emailCell === 'object' && emailCell.text) ? emailCell.text : emailCell; const password = row.getCell('C').value; const role = row.getCell('D').value; const phoneNumber = row.getCell('E').value; if (!name || !email || !password || !role) { console.error(`Row ${rowNumber}: Skipping row due to missing required fields.`); errors.push(`Row ${rowNumber}: Missing required fields.`); errorCount++; continue; } try { const passwordHash = await bcrypt.hash(password.toString(), saltRounds); const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.toString().replace(/[^0-9]/g, '')}` : null; const result = await db.query( `INSERT INTO users (company_id, name, email, password_hash, role, phone_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role, phone_number`, [companyId, name, email, passwordHash, role, formattedPhoneNumber] ); newUsers.push(result.rows[0]); addedCount++; } catch (err) { console.error(`Row ${rowNumber}: Failed to insert user "${email}":`, err.message); errors.push(`Row ${rowNumber} (${email}): ${err.message}`); errorCount++; } } res.status(201).json({ message: `Upload complete: ${addedCount} users added, ${errorCount} rows failed.`, newUsers: newUsers, errors: errors }); } catch (error) { console.error('Error processing Excel file:', error); res.status(500).json({ message: 'Error processing file.' }); } });
 app.patch('/users/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { name, email, role, phoneNumber } = req.body; const { companyId } = req.user; const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null; const result = await db.query(`UPDATE users SET name = $1, email = $2, role = $3, phone_number = $4 WHERE id = $5 AND company_id = $6 RETURNING id, name, email, role, phone_number`, [name, email, role, formattedPhoneNumber, id, companyId]); if (result.rows.length === 0) { return res.status(404).json({ message: "User not found." }); } res.json({ message: 'User updated!', user: result.rows[0] }); } catch (error) { if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); } console.error('Error updating user:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.delete('/users/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { companyId, userId } = req.user; if (id == userId) { return res.status(403).json({ message: "You cannot delete your own account." }); } const result = await db.query('DELETE FROM users WHERE id = $1 AND company_id = $2', [id, companyId]); if (result.rowCount === 0) { return res.status(404).json({ message: "User not found." }); } res.status(200).json({ message: 'User deleted.' }); } catch (error) { console.error('Error deleting user:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
 // Machine Management
 app.get('/machines', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT * FROM machines WHERE company_id = $1 ORDER BY name ASC', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching machines:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.get('/templates/equipment', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const workbook = new excel.Workbook(); const worksheet = workbook.addWorksheet('Equipment'); worksheet.columns = [ { header: 'Machine Name (Required)', key: 'name', width: 30 }, { header: 'Location (Optional)', key: 'location', width: 30 } ]; const instructionsSheet = workbook.addWorksheet('Instructions'); instructionsSheet.mergeCells('A1:B5'); instructionsSheet.getCell('A1').value = 'Instructions:\n1. Do not change the column headers in the "Equipment" sheet.\n2. "Machine Name" is required for every row.\n3. "Location" is optional.\n4. Save this file and upload it on the "Equipment" page.'; instructionsSheet.getCell('A1').alignment = { wrapText: true, vertical: 'top' }; res.setHeader( 'Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ); res.setHeader( 'Content-Disposition', 'attachment; filename="equipment_template.xlsx"' ); await workbook.xlsx.write(res); res.end(); } catch (error) { console.error('Error generating equipment template:', error); res.status(500).json({ message: 'Error generating template' }); } });
+app.post('/machines/upload', authenticateToken, authorize(MANAGER_ONLY), upload.single('file'), async (req, res) => { if (!req.file) { return res.status(400).json({ message: 'No file uploaded.' }); } const { companyId } = req.user; const workbook = new excel.Workbook(); try { await workbook.xlsx.load(req.file.buffer); const worksheet = workbook.getWorksheet('Equipment'); if (!worksheet) { return res.status(400).json({ message: 'Invalid template: "Equipment" worksheet not found.' }); } let addedCount = 0; let errorCount = 0; const newMachines = []; for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) { const row = worksheet.getRow(rowNumber); const machineName = row.getCell('A').value; const location = row.getCell('B').value || null; if (machineName) { try { const result = await db.query( 'INSERT INTO machines (company_id, name, location) VALUES ($1, $2, $3) RETURNING *', [companyId, machineName, location] ); newMachines.push(result.rows[0]); addedCount++; } catch (err) { console.error(`Failed to insert machine "${machineName}":`, err.message); errorCount++; } } } res.status(201).json({ message: `Upload complete: ${addedCount} machines added, ${errorCount} rows failed.`, newMachines: newMachines }); } catch (error) { console.error('Error processing Excel file:', error); res.status(500).json({ message: 'Error processing file.' }); } });
 app.post('/machines', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { name, location } = req.body; const { companyId } = req.user; const result = await db.query('INSERT INTO machines (company_id, name, location) VALUES ($1, $2, $3) RETURNING *', [companyId, name, location]); res.status(201).json({ message: 'Machine created!', machine: result.rows[0] }); } catch (error) { console.error('Error creating machine:', error); res.status(500).json({ message: 'Internal server error' }); } });
-app.post('/machines/upload', authenticateToken, authorize(MANAGER_ONLY), upload.single('file'), async (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ message: 'No file uploaded.' });
-    }
-
-    const { companyId } = req.user;
-    const workbook = new excel.Workbook();
-
-    try {
-        // Read the file from the buffer
-        await workbook.xlsx.load(req.file.buffer);
-        const worksheet = workbook.getWorksheet('Equipment');
-
-        if (!worksheet) {
-            return res.status(400).json({ message: 'Invalid template: "Equipment" worksheet not found.' });
-        }
-
-        let addedCount = 0;
-        let errorCount = 0;
-        const newMachines = [];
-
-        // Loop through each row in the worksheet (row 1 is the header, so skip it)
-        for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
-            const row = worksheet.getRow(rowNumber);
-            const machineName = row.getCell('A').value; // 'Machine Name (Required)'
-            const location = row.getCell('B').value || null; // 'Location (Optional)'
-
-            if (machineName) {
-                try {
-                    const result = await db.query(
-                        'INSERT INTO machines (company_id, name, location) VALUES ($1, $2, $3) RETURNING *',
-                        [companyId, machineName, location]
-                    );
-                    newMachines.push(result.rows[0]);
-                    addedCount++;
-                } catch (err) {
-                    console.error(`Failed to insert machine "${machineName}":`, err.message);
-                    errorCount++;
-                }
-            }
-        }
-
-        res.status(201).json({ 
-            message: `Upload complete: ${addedCount} machines added, ${errorCount} rows failed.`,
-            newMachines: newMachines
-        });
-
-    } catch (error) {
-        console.error('Error processing Excel file:', error);
-        res.status(500).json({ message: 'Error processing file.' });
-    }
-});
 app.patch('/machines/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { name, location } = req.body; const { companyId } = req.user; const result = await db.query('UPDATE machines SET name = $1, location = $2 WHERE id = $3 AND company_id = $4 RETURNING *', [name, location, id, companyId]); if (result.rows.length === 0) { return res.status(404).json({ message: 'Machine not found.' }); } res.json({ message: 'Machine updated!', machine: result.rows[0] }); } catch (error) { console.error('Error updating machine:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.delete('/machines/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { companyId } = req.user; const result = await db.query('DELETE FROM machines WHERE id = $1 AND company_id = $2', [id, companyId]); if (result.rowCount === 0) { return res.status(404).json({ message: 'Machine not found.' }); } res.status(200).json({ message: 'Machine deleted.' }); } catch (error) { if (error.code === '23503') { return res.status(400).json({ message: 'Cannot delete machine. It is linked to other records.' }); } console.error('Error deleting machine:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
@@ -850,257 +717,15 @@ app.post('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), as
 // Preventive Maintenance
 app.get('/preventive-maintenance', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.company_id = $1 ORDER BY pmt.next_due_date ASC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching maintenance tasks:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/preventive-maintenance', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { machineId, taskDescription, frequencyDays, startDate } = req.body; const { companyId } = req.user; const nextDueDate = new Date(startDate); const result = await db.query(`INSERT INTO preventive_maintenance_tasks (machine_id, company_id, task_description, frequency_days, next_due_date) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [machineId, companyId, taskDescription, frequencyDays, nextDueDate]); res.status(201).json({ message: 'Task scheduled!', task: result.rows[0] }); } catch (error) { console.error('Error scheduling task:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.get('/templates/preventive-maintenance', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { companyId } = req.user; const workbook = new excel.Workbook(); const pmSheet = workbook.addWorksheet('PM Tasks'); const machineSheet = workbook.addWorksheet('MachineList'); const machinesResult = await db.query('SELECT id, name FROM machines WHERE company_id = $1 ORDER BY name ASC', [companyId]); const machines = machinesResult.rows; machineSheet.columns = [ { header: 'MachineID', key: 'id', width: 10 }, { header: 'MachineName', key: 'name', width: 30 } ]; machines.forEach(machine => { machineSheet.addRow(machine); }); machineSheet.state = 'hidden'; pmSheet.columns = [ { header: 'Machine Name (Required)', key: 'machine', width: 30 }, { header: 'Task Description (Required)', key: 'description', width: 40 }, { header: 'Frequency (in days) (Required)', key: 'frequency', width: 25 }, { header: 'First Due Date (Required - YYYY-MM-DD)', key: 'startDate', width: 30, style: { numFmt: 'yyyy-mm-dd' } }, ]; if (machines.length > 0) { pmSheet.dataValidations.add('A2:A1000', { type: 'list', allowBlank: false, formulae: [`=MachineList!$B$2:$B$${machines.length + 1}`], showErrorMessage: true, errorTitle: 'Invalid Machine', error: 'Please select a valid machine from the dropdown list' }); } const instructionsSheet = workbook.addWorksheet('Instructions'); instructionsSheet.mergeCells('A1:B5'); instructionsSheet.getCell('A1').value = 'Instructions:\n1. Do not change headers.\n2. On the "PM Tasks" sheet, select a machine from the dropdown for each task.\n3. All columns are required.\n4. Dates must be in YYYY-MM-DD format.'; instructionsSheet.getCell('A1').alignment = { wrapText: true, vertical: 'top' }; res.setHeader( 'Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ); res.setHeader( 'Content-Disposition', 'attachment; filename="pm_tasks_template.xlsx"' ); await workbook.xlsx.write(res); res.end(); } catch (error) { console.error('Error generating PM template:', error); res.status(500).json({ message: 'Error generating template' }); } });
+app.post('/preventive-maintenance/upload', authenticateToken, authorize(MANAGER_ONLY), upload.single('file'), async (req, res) => { if (!req.file) { return res.status(400).json({ message: 'No file uploaded.' }); } const { companyId } = req.user; const workbook = new excel.Workbook(); try { await workbook.xlsx.load(req.file.buffer); const worksheet = workbook.getWorksheet('PM Tasks'); if (!worksheet) { return res.status(400).json({ message: 'Invalid template: "PM Tasks" worksheet not found.' }); } const machinesResult = await db.query('SELECT id, name FROM machines WHERE company_id = $1', [companyId]); const machineMap = new Map(); machinesResult.rows.forEach(machine => { machineMap.set(machine.name.toLowerCase(), machine.id); }); let addedCount = 0; let errorCount = 0; let errors = []; const newTasks = []; for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) { const row = worksheet.getRow(rowNumber); const machineName = row.getCell('A').value; const taskDescription = row.getCell('B').value; const frequencyDays = parseInt(row.getCell('C').value, 10); const startDate = row.getCell('D').value; if (!machineName || !taskDescription || !frequencyDays || !startDate) { errors.push(`Row ${rowNumber}: Skipping row due to missing required fields.`); errorCount++; continue; } const machineId = machineMap.get(machineName.toLowerCase()); if (!machineId) { errors.push(`Row ${rowNumber}: Machine "${machineName}" not found. Skipping.`); errorCount++; continue; } try { const result = await db.query( `INSERT INTO preventive_maintenance_tasks (machine_id, company_id, task_description, frequency_days, next_due_date) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [machineId, companyId, taskDescription, frequencyDays, startDate] ); newTasks.push(result.rows[0]); addedCount++; } catch (err) { console.error(`Row ${rowNumber}: Failed to insert task "${taskDescription}":`, err.message); errors.push(`Row ${rowNumber} (${taskDescription}): ${err.message}`); errorCount++; } } res.status(201).json({ message: `Upload complete: ${addedCount} tasks added, ${errorCount} rows failed.`, newTasks: newTasks, errors: errors }); } catch (error) { console.error('Error processing PM tasks file:', error); res.status(500).json({ message: 'Error processing file.' }); } });
 app.patch('/preventive-maintenance/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { taskDescription, frequencyDays, next_due_date } = req.body; const { companyId } = req.user; const result = await db.query(`UPDATE preventive_maintenance_tasks SET task_description = $1, frequency_days = $2, next_due_date = $3 WHERE id = $4 AND company_id = $5 RETURNING *`, [taskDescription, frequencyDays, next_due_date, id, companyId]); if (result.rows.length === 0) { return res.status(404).json({ message: 'Task not found.' }); } const finalResult = await db.query(`SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.id = $1`, [id]); res.json({ message: 'Task updated!', task: finalResult.rows[0] }); } catch (error) { console.error('Error updating task:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.delete('/preventive-maintenance/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { companyId } = req.user; const result = await db.query('DELETE FROM preventive_maintenance_tasks WHERE id = $1 AND company_id = $2', [id, companyId]); if (result.rowCount === 0) { return res.status(404).json({ message: 'Task not found.' }); } res.status(200).json({ message: 'Task deleted.' }); } catch (error) { console.error('Error deleting task:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/preventive-maintenance/:id/complete', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { id } = req.params; const { companyId } = req.user; const taskRes = await db.query('SELECT frequency_days FROM preventive_maintenance_tasks WHERE id = $1 AND company_id = $2', [id, companyId]); if (taskRes.rows.length === 0) { return res.status(404).json({ message: 'Task not found.' }); } const { frequency_days } = taskRes.rows[0]; const query = ` UPDATE preventive_maintenance_tasks SET last_performed_at = NOW(), next_due_date = (NOW() + ($1 * INTERVAL '1 day'))::DATE WHERE id = $2 AND company_id = $3 RETURNING * `; const result = await db.query(query, [frequency_days, id, companyId]); const updatedTaskQuery = ` SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.id = $1 `; const finalResult = await db.query(updatedTaskQuery, [id]); res.json({ message: 'Task marked as complete!', task: finalResult.rows[0] }); } catch (error) { console.error('Error completing task:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
-// Bulk Preventive Maintenance Upload via Excel
-app.post('/preventive-maintenance/upload', authenticateToken, authorize(MANAGER_ONLY), upload.single('file'), async (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ message: 'No file uploaded.' });
-    }
-
-    const { companyId } = req.user;
-    const workbook = new excel.Workbook();
-    
-    try {
-        await workbook.xlsx.load(req.file.buffer);
-        const worksheet = workbook.getWorksheet('PM Tasks');
-        
-        if (!worksheet) {
-            return res.status(400).json({ message: 'Invalid template: "PM Tasks" worksheet not found.' });
-        }
-        
-        // Step 1: Create a lookup map of all machines in this company
-        // This is much faster than querying the DB for every row in the loop.
-        const machinesResult = await db.query('SELECT id, name FROM machines WHERE company_id = $1', [companyId]);
-        const machineMap = new Map();
-        machinesResult.rows.forEach(machine => {
-            // Store as { "machine name lowercase": machine_id }
-            machineMap.set(machine.name.toLowerCase(), machine.id);
-        });
-
-        let addedCount = 0;
-        let errorCount = 0;
-        let errors = [];
-        const newTasks = [];
-
-        // Loop through each row (skip header)
-        for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
-            const row = worksheet.getRow(rowNumber);
-            
-            const machineName = row.getCell('A').value;
-            const taskDescription = row.getCell('B').value;
-            const frequencyDays = parseInt(row.getCell('C').value, 10);
-            const startDate = row.getCell('D').value; // Excel date
-
-            // Validation
-            if (!machineName || !taskDescription || !frequencyDays || !startDate) {
-                errors.push(`Row ${rowNumber}: Skipping row due to missing required fields.`);
-                errorCount++;
-                continue;
-            }
-
-            // Find the machine ID from our map
-            const machineId = machineMap.get(machineName.toLowerCase());
-
-            if (!machineId) {
-                errors.push(`Row ${rowNumber}: Machine "${machineName}" not found. Skipping.`);
-                errorCount++;
-                continue;
-            }
-
-            try {
-                // Insert the new PM task
-                const result = await db.query(
-                    `INSERT INTO preventive_maintenance_tasks (machine_id, company_id, task_description, frequency_days, next_due_date)
-                     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-                    [machineId, companyId, taskDescription, frequencyDays, startDate]
-                );
-                newTasks.push(result.rows[0]);
-                addedCount++;
-            } catch (err) {
-                console.error(`Row ${rowNumber}: Failed to insert task "${taskDescription}":`, err.message);
-                errors.push(`Row ${rowNumber} (${taskDescription}): ${err.message}`);
-                errorCount++;
-            }
-        }
-
-        res.status(201).json({ 
-            message: `Upload complete: ${addedCount} tasks added, ${errorCount} rows failed.`,
-            newTasks: newTasks,
-            errors: errors
-        });
-
-    } catch (error) {
-        console.error('Error processing PM tasks file:', error);
-        res.status(500).json({ message: 'Error processing file.' });
-    }
-});
-
 // Machine Inspection Management
 app.get('/inspections', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT ins.*, m.name as machine_name, u.name as inspected_by_name FROM machine_inspections ins JOIN machines m ON ins.machine_id = m.id JOIN users u ON ins.inspected_by_id = u.id WHERE ins.company_id = $1 ORDER BY ins.inspected_at DESC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching machine inspections:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/inspections', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { machineId, status, remarks } = req.body; const { userId, companyId } = req.user; if (!machineId || !status) { return res.status(400).json({ message: 'Machine ID and status are required.' }); } if (status === 'Not Okay' && !remarks) { return res.status(400).json({ message: 'Remarks are required if status is "Not Okay".' }); } const result = await db.query( `INSERT INTO machine_inspections (machine_id, company_id, inspected_by_id, status, remarks) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [machineId, companyId, userId, status, remarks || null] ); res.status(201).json({ message: 'Inspection logged successfully!', inspection: result.rows[0] }); } catch (error) { console.error('Error logging inspection:', error); res.status(500).json({ message: 'Internal server error' }); } });
-
-// NEW: Template Download Endpoints
-app.get('/templates/equipment', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => {
-    try {
-        const workbook = new excel.Workbook();
-        const worksheet = workbook.addWorksheet('Equipment');
-
-        // Define the columns for the template
-        worksheet.columns = [
-            { header: 'Machine Name (Required)', key: 'name', width: 30 },
-            { header: 'Location (Optional)', key: 'location', width: 30 }
-        ];
-
-        // Add a second sheet for instructions
-        const instructionsSheet = workbook.addWorksheet('Instructions');
-        instructionsSheet.mergeCells('A1:B5');
-        instructionsSheet.getCell('A1').value = 'Instructions:\n1. Do not change the column headers in the "Equipment" sheet.\n2. "Machine Name" is required for every row.\n3. "Location" is optional.\n4. Save this file and upload it on the "Equipment" page.';
-        instructionsSheet.getCell('A1').alignment = { wrapText: true, vertical: 'top' };
-
-        // Set response headers to tell the browser it's an Excel file
-        res.setHeader(
-            'Content-Type',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        );
-        res.setHeader(
-            'Content-Disposition',
-            'attachment; filename="equipment_template.xlsx"'
-        );
-
-        // Send the file
-        await workbook.xlsx.write(res);
-        res.end();
-
-    } catch (error) {
-        console.error('Error generating equipment template:', error);
-        res.status(500).json({ message: 'Error generating template' });
-    }
-});
-
-// User Import Template
-app.get('/templates/users', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => {
-    try {
-        const workbook = new excel.Workbook();
-        const worksheet = workbook.addWorksheet('Users');
-
-        // Define the columns for the template
-        worksheet.columns = [
-            { header: 'Full Name (Required)', key: 'name', width: 30 },
-            { header: 'Email (Required)', key: 'email', width: 30 },
-            { header: 'Initial Password (Required)', key: 'password', width: 30 },
-            { header: 'Role (Required)', key: 'role', width: 25 },
-            { header: 'Phone Number (Optional, e.g., +254...)', key: 'phone', width: 25, numFmt: '@' }
-        ];
-        
-        // Add a dropdown list for the 'Role' column
-        // This helps prevent data entry errors
-        worksheet.dataValidations.add('D2:D1000', {
-            type: 'list',
-            allowBlank: false,
-            formulae: ['"Maintenance Manager,Supervisor,Maintenance Technician,Operator"'],
-            showErrorMessage: true,
-            errorTitle: 'Invalid Role',
-            error: 'Please select a valid role from the dropdown list'
-        });
-
-        // Add an instructions sheet
-        const instructionsSheet = workbook.addWorksheet('Instructions');
-        instructionsSheet.mergeCells('A1:B5');
-        instructionsSheet.getCell('A1').value = 'Instructions:\n1. Do not change the column headers in the "Users" sheet.\n2. All columns are required except for Phone Number.\n3. For the "Role" column, please select a value from the dropdown list.\n4. Phone Number must include the country code (e.g., +254...)';
-        instructionsSheet.getCell('A1').alignment = { wrapText: true, vertical: 'top' };
-
-        // Set response headers to tell the browser it's an Excel file
-        res.setHeader(
-            'Content-Type',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        );
-        res.setHeader(
-            'Content-Disposition',
-            'attachment; filename="users_template.xlsx"'
-        );
-
-        // Send the file
-        await workbook.xlsx.write(res);
-        res.end();
-
-    } catch (error) {
-        console.error('Error generating user template:', error);
-        res.status(500).json({ message: 'Error generating template' });
-    }
-});
-
-// Preventive Maintenance Template
-app.get('/templates/preventive-maintenance', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => {
-    try {
-        const { companyId } = req.user;
-        const workbook = new excel.Workbook();
-        const pmSheet = workbook.addWorksheet('PM Tasks');
-        const machineSheet = workbook.addWorksheet('MachineList'); // Hidden sheet
-
-        // --- MachineList Sheet Setup ---
-        // Fetch all machines for this company
-        const machinesResult = await db.query('SELECT id, name FROM machines WHERE company_id = $1 ORDER BY name ASC', [companyId]);
-        const machines = machinesResult.rows;
-
-        // Add headers and data to the hidden machine list sheet
-        machineSheet.columns = [
-            { header: 'MachineID', key: 'id', width: 10 },
-            { header: 'MachineName', key: 'name', width: 30 }
-        ];
-        machines.forEach(machine => {
-            machineSheet.addRow(machine);
-        });
-        
-        // Hide the sheet
-        machineSheet.state = 'hidden';
-
-        // --- PM Tasks Sheet Setup ---
-        pmSheet.columns = [
-            { header: 'Machine Name (Required)', key: 'machine', width: 30 },
-            { header: 'Task Description (Required)', key: 'description', width: 40 },
-            { header: 'Frequency (in days) (Required)', key: 'frequency', width: 25 },
-            { header: 'First Due Date (Required - YYYY-MM-DD)', key: 'startDate', width: 30, style: { numFmt: 'yyyy-mm-dd' } },
-        ];
-
-        // Add data validation dropdown for the machine column
-        if (machines.length > 0) {
-            pmSheet.dataValidations.add('A2:A1000', {
-                type: 'list',
-                allowBlank: false,
-                formulae: [`=MachineList!$B$2:$B$${machines.length + 1}`], // Points to the names in the hidden sheet
-                showErrorMessage: true,
-                errorTitle: 'Invalid Machine',
-                error: 'Please select a valid machine from the dropdown list'
-            });
-        }
-
-        // --- Instructions Sheet ---
-        const instructionsSheet = workbook.addWorksheet('Instructions');
-        instructionsSheet.mergeCells('A1:B5');
-        instructionsSheet.getCell('A1').value = 'Instructions:\n1. Do not change headers.\n2. On the "PM Tasks" sheet, select a machine from the dropdown for each task.\n3. All columns are required.\n4. Dates must be in YYYY-MM-DD format.';
-        instructionsSheet.getCell('A1').alignment = { wrapText: true, vertical: 'top' };
-
-        // Set response headers
-        res.setHeader(
-            'Content-Type',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        );
-        res.setHeader(
-            'Content-Disposition',
-            'attachment; filename="pm_tasks_template.xlsx"'
-        );
-
-        await workbook.xlsx.write(res);
-        res.end();
-
-    } catch (error) {
-        console.error('Error generating PM template:', error);
-        res.status(500).json({ message: 'Error generating template' });
-    }
-});
 
 // --- SERVER STARTUP ---
 app.listen(PORT, () => {

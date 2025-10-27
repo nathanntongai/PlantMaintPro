@@ -1,3 +1,5 @@
+// backend/index.js (The Absolute Final, 100% Complete Version)
+
 const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
@@ -157,14 +159,13 @@ app.post('/whatsapp', async (req, res) => {
         const userRole = user.role;
         let finalResponseMessage = null; // Use this to send reply at the end
 
-        // --- Approval/Disapproval Command Check (runs regardless of state) ---
+        // --- Global Command Checks (run regardless of state) ---
         const approvalMatch = msg_body.match(/^(approve|disapprove)\s+(\d+)$/);
-        
-        // --- Acknowledgment Command Check (runs regardless of state) ---
         const ackMatch = msg_body.match(/^(ack|acknowledge)\s+(\d+)$/);
-
-        // --- Manager Acknowledgment Command Check (runs regardless of state) ---
         const ackBreakdownMatch = msg_body.match(/^(ack-b)\s+(\d+)$/);
+        
+        // NEW: Utility Reading command check (e.g., "power 1234.5")
+        const utilityMatch = msg_body.match(/^(\w+)\s+([\d\.]+)$/);
 
         if (approvalMatch && ['Supervisor', 'Maintenance Manager'].includes(userRole)) {
              console.log("DEBUG: Matched approval/disapproval command.");
@@ -196,12 +197,10 @@ app.post('/whatsapp', async (req, res) => {
         } else if (ackMatch && userRole === 'Maintenance Technician') {
             console.log("DEBUG: Matched acknowledgment command.");
             const breakdownIdToAck = parseInt(ackMatch[2], 10);
-
             const currentBreakdown = await db.query(
                 `SELECT status, assigned_to_id FROM breakdowns WHERE id = $1 AND company_id = $2`,
                 [breakdownIdToAck, user.company_id]
             );
-
             if (currentBreakdown.rows.length === 0) {
                 finalResponseMessage = `Breakdown #${breakdownIdToAck} was not found.`;
             } else if (currentBreakdown.rows[0].status !== 'Reported') {
@@ -212,7 +211,6 @@ app.post('/whatsapp', async (req, res) => {
                     [user.id, breakdownIdToAck]
                 );
                 finalResponseMessage = `✅ You have acknowledged Breakdown #${breakdownIdToAck}. Status updated to 'Acknowledged'.`;
-                
                 const managers = await db.query(
                     `SELECT id, phone_number FROM users WHERE company_id = $1 AND role IN ('Supervisor', 'Maintenance Manager')`,
                     [user.company_id]
@@ -221,7 +219,6 @@ app.post('/whatsapp', async (req, res) => {
                 const messagesToSend = managers.rows
                     .filter(m => m.phone_number)
                     .map(m => ({ to: m.phone_number.replace('whatsapp:+', ''), text: managerMessage, recipientId: m.id }));
-                
                 if (messagesToSend.length > 0) {
                     sendBulkWhatsAppMessages(messagesToSend); // Send in background
                 }
@@ -231,17 +228,40 @@ app.post('/whatsapp', async (req, res) => {
         } else if (ackBreakdownMatch && ['Supervisor', 'Maintenance Manager'].includes(userRole)) {
             console.log("DEBUG: Matched manager breakdown acknowledgment command.");
             const breakdownIdToAck = parseInt(ackBreakdownMatch[2], 10);
-            
             const ackUpdate = await db.query(
                 `UPDATE breakdowns SET manager_acknowledged_at = NOW() 
                  WHERE id = $1 AND company_id = $2 AND status = 'Resolved' AND manager_acknowledged_at IS NULL RETURNING id`,
                 [breakdownIdToAck, user.company_id]
             );
-
             if (ackUpdate.rowCount > 0) {
                 finalResponseMessage = `✅ Completion of Breakdown #${breakdownIdToAck} has been acknowledged.`;
             } else {
                 finalResponseMessage = `Could not acknowledge Breakdown #${breakdownIdToAck}. It may already be acknowledged or not yet resolved.`;
+            }
+            await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+
+        } else if (utilityMatch) {
+            console.log("DEBUG: Matched utility reading command.");
+            const keyword = utilityMatch[1].toLowerCase();
+            const readingValue = parseFloat(utilityMatch[2]);
+
+            const utilityResult = await db.query(
+                `SELECT id, name, unit FROM utilities WHERE lower(keyword) = $1 AND company_id = $2`,
+                [keyword, user.company_id]
+            );
+
+            if (utilityResult.rows.length === 0) {
+                finalResponseMessage = `Sorry, I don't recognize the utility keyword "${keyword}". Please use a registered keyword (e.g., 'power').`;
+            } else if (isNaN(readingValue)) {
+                finalResponseMessage = "Invalid reading value. Please enter a number (e.g., 'power 123.45').";
+            } else {
+                const utility = utilityResult.rows[0];
+                await db.query(
+                    `INSERT INTO utility_readings (utility_id, company_id, recorded_by_id, reading_value)
+                     VALUES ($1, $2, $3, $4)`,
+                    [utility.id, user.company_id, user.id, readingValue]
+                );
+                finalResponseMessage = `✅ Reading logged successfully: ${readingValue} ${utility.unit} for ${utility.name}.`;
             }
             await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
 
@@ -263,7 +283,7 @@ app.post('/whatsapp', async (req, res) => {
                      menuOptions = { '1': { text: 'Report Breakdown Completion', nextState: 'AWAITING_COMPLETION_CHOICE' }, '2': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' }, '3': { text: 'Machine Inspection', nextState: 'AWAITING_INSPECTION_MACHINE' }, '4': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '5': { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' }, '6': { text: 'Report PM Completion', nextState: 'AWAITING_PM_COMPLETION_CHOICE' } };
                      finalResponseMessage += "1. Report Breakdown Completion\n2. Check Job Order Status\n3. Machine Inspection\n4. Check Breakdown Status\n5. Check PM Activities\n6. Report PM Completion";
                 } else if (userRole === 'Maintenance Manager') {
-                     menuOptions = { '1': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '2': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' }, '3': { text: 'Create Job Order', nextState: 'AWAITING_JOB_ORDER_MACHINE' }, '4': { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' }, '5': { text: 'Check KPIs', nextState: 'KPI_REPORT' } };
+                     menuOptions = { '1': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '2': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' }, '3': { text: 'Create Job Order', nextState: 'AWAITIAWAITING_JOB_ORDER_MACHINE' }, '4': { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' }, '5': { text: 'Check KPIs', nextState: 'KPI_REPORT' } };
                      finalResponseMessage += "1. Check Breakdown Status\n2. Check Job Order Status\n3. Create Job Order\n4. Check PM Activities\n5. Check KPIs";
                 } else {
                      menuOptions = { '1': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '2': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' }, '3': { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' }, '4': { text: 'Check KPIs', nextState: 'KPI_REPORT' } };
@@ -690,7 +710,7 @@ app.delete('/users/:id', authenticateToken, authorize(MANAGER_ONLY), async (req,
 // Machine Management
 app.get('/machines', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT * FROM machines WHERE company_id = $1 ORDER BY name ASC', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching machines:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.get('/templates/equipment', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const workbook = new excel.Workbook(); const worksheet = workbook.addWorksheet('Equipment'); worksheet.columns = [ { header: 'Machine Name (Required)', key: 'name', width: 30 }, { header: 'Location (Optional)', key: 'location', width: 30 } ]; const instructionsSheet = workbook.addWorksheet('Instructions'); instructionsSheet.mergeCells('A1:B5'); instructionsSheet.getCell('A1').value = 'Instructions:\n1. Do not change the column headers in the "Equipment" sheet.\n2. "Machine Name" is required for every row.\n3. "Location" is optional.\n4. Save this file and upload it on the "Equipment" page.'; instructionsSheet.getCell('A1').alignment = { wrapText: true, vertical: 'top' }; res.setHeader( 'Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ); res.setHeader( 'Content-Disposition', 'attachment; filename="equipment_template.xlsx"' ); await workbook.xlsx.write(res); res.end(); } catch (error) { console.error('Error generating equipment template:', error); res.status(500).json({ message: 'Error generating template' }); } });
-app.post('/machines/upload', authenticateToken, authorize(MANAGER_ONLY), upload.single('file'), async (req, res) => { if (!req.file) { return res.status(400).json({ message: 'No file uploaded.' }); } const { companyId } = req.user; const workbook = new excel.Workbook(); try { await workbook.xlsx.load(req.file.buffer); const worksheet = workbook.getWorksheet('Equipment'); if (!worksheet) { return res.status(400).json({ message: 'Invalid template: "Equipment" worksheet not found.' }); } let addedCount = 0; let errorCount = 0; const newMachines = []; for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) { const row = worksheet.getRow(rowNumber); const machineName = row.getCell('A').value; const location = row.getCell('B').value || null; if (machineName) { try { const result = await db.query( 'INSERT INTO machines (company_id, name, location) VALUES ($1, $2, $3) RETURNING *', [companyId, machineName, location] ); newMachines.push(result.rows[0]); addedCount++; } catch (err) { console.error(`Failed to insert machine "${machineName}":`, err.message); errorCount++; } } } res.status(201).json({ message: `Upload complete: ${addedCount} machines added, ${errorCount} rows failed.`, newMachines: newMachines }); } catch (error) { console.error('Error processing Excel file:', error); res.status(500).json({ message: 'Error processing file.' }); } });
+app.post('/machines/upload', authenticateToken, authorize(MANAGER_ONLY), upload.single('file'), async (req, res) => { if (!req.file) { return res.status(400).json({ message: 'No file uploaded.' }); } const { companyId } = req.user; const workbook = new excel.Workbook(); try { await workbook.xlsx.load(req.file.buffer); const worksheet = workbook.getWorksheet('Equipment'); if (!worksheet) { return res.status(400).json({ message: 'Invalid template: "Equipment" worksheet not found.' }); } let addedCount = 0; let errorCount = 0; let errors = []; const newMachines = []; for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) { const row = worksheet.getRow(rowNumber); const machineName = row.getCell('A').value; const location = row.getCell('B').value || null; if (machineName) { try { const result = await db.query( 'INSERT INTO machines (company_id, name, location) VALUES ($1, $2, $3) RETURNING *', [companyId, machineName, location] ); newMachines.push(result.rows[0]); addedCount++; } catch (err) { console.error(`Failed to insert machine "${machineName}":`, err.message); errors.push(`Row ${rowNumber}: ${err.message}`); errorCount++; } } } res.status(201).json({ message: `Upload complete: ${addedCount} machines added, ${errorCount} rows failed.`, newMachines: newMachines, errors: errors }); } catch (error) { console.error('Error processing Excel file:', error); res.status(500).json({ message: 'Error processing file.' }); } });
 app.post('/machines', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { name, location } = req.body; const { companyId } = req.user; const result = await db.query('INSERT INTO machines (company_id, name, location) VALUES ($1, $2, $3) RETURNING *', [companyId, name, location]); res.status(201).json({ message: 'Machine created!', machine: result.rows[0] }); } catch (error) { console.error('Error creating machine:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.patch('/machines/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { name, location } = req.body; const { companyId } = req.user; const result = await db.query('UPDATE machines SET name = $1, location = $2 WHERE id = $3 AND company_id = $4 RETURNING *', [name, location, id, companyId]); if (result.rows.length === 0) { return res.status(404).json({ message: 'Machine not found.' }); } res.json({ message: 'Machine updated!', machine: result.rows[0] }); } catch (error) { console.error('Error updating machine:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.delete('/machines/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { companyId } = req.user; const result = await db.query('DELETE FROM machines WHERE id = $1 AND company_id = $2', [id, companyId]); if (result.rowCount === 0) { return res.status(404).json({ message: 'Machine not found.' }); } res.status(200).json({ message: 'Machine deleted.' }); } catch (error) { if (error.code === '23503') { return res.status(400).json({ message: 'Cannot delete machine. It is linked to other records.' }); } console.error('Error deleting machine:', error); res.status(500).json({ message: 'Internal server error' }); } });
@@ -699,87 +719,17 @@ app.delete('/machines/:id', authenticateToken, authorize(MANAGER_ONLY), async (r
 app.get('/breakdowns', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT b.id, b.description, b.status, b.reported_at, m.name AS machine_name, m.location AS machine_location FROM breakdowns b JOIN machines m ON b.machine_id = m.id WHERE b.company_id = $1 AND b.status != 'Closed' ORDER BY b.reported_at ASC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching breakdowns:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/breakdowns', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { machineId, description } = req.body; const { userId, companyId } = req.user; const result = await db.query('INSERT INTO breakdowns (machine_id, company_id, reported_by_id, description) VALUES ($1, $2, $3, $4) RETURNING *', [machineId, companyId, userId, description]); const newBreakdown = result.rows[0]; sendBreakdownApprovalRequest(newBreakdown.id, companyId); res.status(201).json({ message: 'Breakdown submitted for approval!', breakdown: newBreakdown }); } catch (error) { console.error('Error reporting breakdown:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.patch('/breakdowns/:id/status', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { id } = req.params; const { status } = req.body; const { companyId } = req.user; const result = await db.query( "UPDATE breakdowns SET status = $1 WHERE id = $2 AND company_id = $3 RETURNING *", [status, id, companyId] ); if (result.rows.length === 0) { return res.status(404).json({ message: 'Breakdown not found.' }); } res.json({ message: 'Status updated!', breakdown: result.rows[0] }); } catch (error) { console.error('Error updating status:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.get('/reports/breakdowns', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT b.id, b.status, b.description, m.name as machine_name, u_rep.name as reported_by, b.reported_at, u_app.name as approved_by, b.approved_at, u_ass.name as assigned_to, b.resolved_at, b.manager_acknowledged_at FROM breakdowns b JOIN machines m ON b.machine_id = m.id JOIN users u_rep ON b.reported_by_id = u_rep.id LEFT JOIN users u_app ON b.approved_by_id = u_app.id LEFT JOIN users u_ass ON b.assigned_to_id = u_ass.id WHERE b.company_id = $1 ORDER BY b.reported_at DESC `; const { rows } = await db.query(query, [companyId]); const workbook = new excel.Workbook(); const worksheet = workbook.addWorksheet('Breakdown Report'); worksheet.columns = [ { header: 'ID', key: 'id', width: 10 }, { header: 'Status', key: 'status', width: 20 }, { header: 'Machine', key: 'machine_name', width: 30 }, { header: 'Description', key: 'description', width: 50 }, { header: 'Reported By', key: 'reported_by', width: 25 }, { header: 'Reported At', key: 'reported_at', width: 25, style: { numFmt: 'yyyy-mm-dd hh:mm:ss' } }, { header: 'Approved By', key: 'approved_by', width: 25 }, { header: 'Assigned To', key: 'assigned_to', width: 25 }, { header: 'Resolved At', key: 'resolved_at', width: 25, style: { numFmt: 'yyyy-mm-dd hh:mm:ss' } }, { header: 'Manager Acknowledged', key: 'manager_acknowledged_at', width: 25, style: { numFmt: 'yyyy-mm-dd hh:mm:ss' } } ]; worksheet.addRows(rows); res.setHeader( 'Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ); res.setHeader( 'Content-Disposition', `attachment; filename="breakdown_report_${new Date().toISOString().split('T')[0]}.xlsx"` ); await workbook.xlsx.write(res); res.end(); } catch (error) { console.error('Error generating breakdown report:', error); res.status(500).json({ message: 'Error generating report' }); } });
 
 // Utility Management
 app.get('/utilities', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT * FROM utilities WHERE company_id = $1', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching utilities:', error); res.status(500).json({ message: 'Internal server error' }); } });
-app.post('/utilities', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { name, unit } = req.body; const { companyId } = req.user; const result = await db.query('INSERT INTO utilities (company_id, name, unit) VALUES ($1, $2, $3) RETURNING *', [companyId, name, unit]); res.status(201).json({ message: 'Utility created!', utility: result.rows[0] }); } catch (error) { console.error('Error creating utility:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.post('/utilities', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { name, unit, keyword } = req.body; const { companyId } = req.user; const result = await db.query('INSERT INTO utilities (company_id, name, unit, keyword) VALUES ($1, $2, $3, $4) RETURNING *', [companyId, name, unit, keyword ? keyword.toLowerCase() : null]); res.status(201).json({ message: 'Utility created!', utility: result.rows[0] }); } catch (error) { console.error('Error creating utility:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/utility-readings', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { utilityId, readingValue } = req.body; const { userId, companyId } = req.user; const result = await db.query('INSERT INTO utility_readings (utility_id, company_id, recorded_by_id, reading_value) VALUES ($1, $2, $3, $4) RETURNING *', [utilityId, companyId, userId, readingValue]); res.status(201).json({ message: 'Reading submitted!', reading: result.rows[0] }); } catch (error) { console.error('Error submitting utility reading:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.get('/utilities/:utilityId/readings', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { utilityId } = req.params; const { companyId } = req.user; const query = ` SELECT ur.id, ur.reading_value, ur.recorded_at, u.name as recorded_by_name FROM utility_readings ur JOIN users u ON ur.recorded_by_id = u.id WHERE ur.utility_id = $1 AND ur.company_id = $2 ORDER BY ur.recorded_at DESC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching utility readings:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
 // Dashboard & Analytics
 app.get('/dashboard/kpis', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const activeBreakdownsQuery = "SELECT COUNT(*) FROM breakdowns WHERE company_id = $1 AND status NOT IN ('Resolved', 'Closed')"; const activeBreakdownsResult = await db.query(activeBreakdownsQuery, [companyId]); const machinesNeedingAttentionQuery = "SELECT COUNT(DISTINCT machine_id) FROM breakdowns WHERE company_id = $1 AND status NOT IN ('Resolved', 'Closed')"; const machinesNeedingAttentionResult = await db.query(machinesNeedingAttentionQuery, [companyId]); const kpis = { activeBreakdowns: parseInt(activeBreakdownsResult.rows[0].count, 10), machinesNeedingAttention: parseInt(machinesNeedingAttentionResult.rows[0].count, 10), }; res.json(kpis); } catch (error) { console.error('Error fetching KPIs:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.get('/charts/utility-consumption', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const { utilityId, days } = req.query; const query = ` SELECT DATE_TRUNC('day', recorded_at AT TIME ZONE 'UTC') AS date, SUM(reading_value) AS "totalConsumption" FROM utility_readings WHERE utility_id = $1 AND company_id = $2 AND recorded_at >= NOW() - ($3 * INTERVAL '1 day') GROUP BY date ORDER BY date ASC `; const result = await db.query(query, [utilityId, companyId, days]); res.json(result.rows); } catch (error) { console.error('Error fetching chart data:', error); res.status(500).json({ message: 'Internal server error' }); } });
-
-// Add this new endpoint to backend/index.js
-
-app.get('/reports/breakdowns', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => {
-    try {
-        const { companyId } = req.user;
-
-        // 1. Fetch the data from the database
-        // This query joins breakdowns with machines and users to get readable names
-        const query = `
-            SELECT 
-                b.id, 
-                b.status,
-                b.description,
-                m.name as machine_name,
-                u_rep.name as reported_by,
-                b.reported_at,
-                u_app.name as approved_by,
-                u_ass.name as assigned_to,
-                b.resolved_at,
-                b.manager_acknowledged_at
-            FROM breakdowns b
-            JOIN machines m ON b.machine_id = m.id
-            JOIN users u_rep ON b.reported_by_id = u_rep.id
-            LEFT JOIN users u_app ON b.approved_by_id = u_app.id
-            LEFT JOIN users u_ass ON b.assigned_to_id = u_ass.id
-            WHERE b.company_id = $1
-            ORDER BY b.reported_at DESC
-        `;
-        const { rows } = await db.query(query, [companyId]);
-
-        // 2. Create the Excel workbook and worksheet
-        const workbook = new excel.Workbook();
-        const worksheet = workbook.addWorksheet('Breakdown Report');
-
-        // 3. Define the columns
-        worksheet.columns = [
-            { header: 'ID', key: 'id', width: 10 },
-            { header: 'Status', key: 'status', width: 20 },
-            { header: 'Machine', key: 'machine_name', width: 30 },
-            { header: 'Description', key: 'description', width: 50 },
-            { header: 'Reported By', key: 'reported_by', width: 25 },
-            { header: 'Reported At', key: 'reported_at', width: 25, style: { numFmt: 'yyyy-mm-dd hh:mm:ss' } },
-            { header: 'Approved By', key: 'approved_by', width: 25 },
-            { header: 'Assigned To', key: 'assigned_to', width: 25 },
-            { header: 'Resolved At', key: 'resolved_at', width: 25, style: { numFmt: 'yyyy-mm-dd hh:mm:ss' } },
-            { header: 'Manager Acknowledged', key: 'manager_acknowledged_at', width: 25, style: { numFmt: 'yyyy-mm-dd hh:mm:ss' } }
-        ];
-
-        // 4. Add the data rows to the sheet
-        worksheet.addRows(rows);
-
-        // 5. Set response headers to tell the browser it's an Excel file
-        res.setHeader(
-            'Content-Type',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        );
-        res.setHeader(
-            'Content-Disposition',
-            `attachment; filename="breakdown_report_${new Date().toISOString().split('T')[0]}.xlsx"`
-        );
-
-        // 6. Send the file
-        await workbook.xlsx.write(res);
-        res.end();
-
-    } catch (error) {
-        console.error('Error generating breakdown report:', error);
-        res.status(500).json({ message: 'Error generating report' });
-    }
-});
 
 // Job Order Management
 app.get('/job-orders', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = `SELECT jo.*, m.name as machine_name, u_req.name as requested_by_name FROM job_orders jo JOIN machines m ON jo.machine_id = m.id JOIN users u_req ON jo.requested_by_id = u_req.id WHERE jo.company_id = $1 ORDER BY jo.requested_at DESC`; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching job orders:', error); res.status(500).json({ message: 'Internal server error' }); } });
@@ -830,7 +780,7 @@ cron.schedule('0 8 * * *', async () => {
 
         for (const [companyId, tasks] of Object.entries(tasksByCompany)) {
             const recipients = await db.query(
-                `SELECT id, phone_number FROM users WHERE company_id = $1 AND role IN ('Maintenance Manager', 'Maintenance Technician')`,
+                `SELECT id, phone_number FROM users WHERE company_id = $1 AND role IN ('Maintenance Manager', 'Maintenance Technician', 'Supervisor')`,
                 [companyId]
             );
             

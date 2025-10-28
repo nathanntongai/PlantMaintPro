@@ -35,8 +35,8 @@ function Dashboard() {
         setError('');
         
         const [kpiRes, breakdownRes, machineRes] = await Promise.all([
-          api.get('/kpis'),
-          api.get('/breakdowns/active'),
+          api.get('/api/kpis'),
+          api.get('/api/breakdowns/active'),
           api.get('/machines')
         ]);
 
@@ -89,7 +89,7 @@ function Dashboard() {
       return;
     }
     try {
-      const response = await api.post('/breakdowns', {
+      const response = await api.post('/api/breakdowns', {
         machine_id: newBreakdownData.machineId,
         description: newBreakdownData.description,
       });
@@ -103,7 +103,7 @@ function Dashboard() {
 
   const handleStatusUpdate = async (id, status) => {
     try {
-      const response = await api.patch(`/breakdowns/${id}/status`, { status });
+      const response = await api.patch(`/api/breakdowns/${id}/status`, { status });
       setBreakdowns(breakdowns.map(b => b.id === id ? response.data : b));
     } catch (err) {
       console.error("Error updating status:", err);
@@ -113,7 +113,7 @@ function Dashboard() {
 
   const handleDownloadReport = async () => {
     try {
-      const response = await api.get('/breakdowns/report/excel', {
+      const response = await api.get('/api/breakdowns/report/excel', {
         responseType: 'blob', // Important: Tell axios to expect a file
       });
       const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });

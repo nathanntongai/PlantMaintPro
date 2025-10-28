@@ -1,34 +1,32 @@
-// frontend/src/pages/UtilityManagement.jsx
+// frontend/src/pages/UtilityManagement.jsx (Corrected for your backend)
 import React, { useState, useEffect } from 'react';
-import api from '../api';
+import api from '../api'; // Your axios instance
 import { useAuth } from '../context/AuthContext';
-import { 
+import {
   Container, Typography, Card, CardContent, CircularProgress, Alert, Button, Box, IconButton,
   Dialog, DialogTitle, DialogContent, DialogActions, TextField, DialogContentText
 } from '@mui/material';
-import DeleteIcon from '@mui/icons-material/Delete';
+// Removed DeleteIcon as backend doesn't support delete yet
 import AddIcon from '@mui/icons-material/Add';
 
-const initialFormState = { name: '', unit: '', alert_threshold_percent: 15 };
+// Updated initial state to match backend (keyword instead of threshold)
+const initialFormState = { name: '', unit: '', keyword: '' };
 
 function UtilityManagement() {
   const { user } = useAuth();
   const [utilities, setUtilities] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  
-  // State for Add/Edit Dialog
+
+  // State for Add Dialog
   const [open, setOpen] = useState(false);
   const [formData, setFormData] = useState(initialFormState);
-  
-  // State for Delete Dialog
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [utilityToDelete, setUtilityToDelete] = useState(null);
 
   const fetchUtilities = async () => {
     try {
       setLoading(true);
-      const { data } = await api.get('/api/utilities');
+      // --- FIX: Removed '/api' prefix ---
+      const { data } = await api.get('/utilities');
       setUtilities(data);
       setError('');
     } catch (err) {
@@ -46,7 +44,7 @@ function UtilityManagement() {
   // --- Dialog Handlers ---
   const handleOpenAddDialog = () => {
     setFormData(initialFormState);
-    setError('');
+    setError(''); // Clear previous errors
     setOpen(true);
   };
 
@@ -54,48 +52,35 @@ function UtilityManagement() {
     setOpen(false);
   };
 
-  const handleDeleteClick = (utility) => {
-    setUtilityToDelete(utility);
-    setConfirmOpen(true);
-  };
-
-  const handleCloseConfirm = () => {
-    setConfirmOpen(false);
-    setUtilityToDelete(null);
-  };
-
   // --- Form & API Handlers ---
   const handleFormChange = (e) => {
     const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
+    // Store keyword as lowercase for consistency, as backend does
+    const processedValue = name === 'keyword' ? value.toLowerCase() : value;
+    setFormData(prev => ({ ...prev, [name]: processedValue }));
   };
 
   const handleSubmit = async () => {
+    // Basic validation
+    if (!formData.name || !formData.unit || !formData.keyword) {
+        setError('Name, Unit, and Keyword are required.');
+        return;
+    }
     try {
-      setError('');
-      // We already have the API set to capitalize the name
-      await api.post('/api/utilities', formData);
+      setError(''); // Clear previous errors
+      // --- FIX: Removed '/api' prefix ---
+      // Backend expects name, unit, keyword
+      await api.post('/utilities', formData);
       handleCloseDialog();
       fetchUtilities(); // Refresh the list
     } catch (err) {
       console.error("Error creating utility:", err);
-      setError(err.response?.data?.msg || 'Failed to create utility.');
+      // Use error message from backend if available
+      setError(err.response?.data?.message || 'Failed to create utility.');
     }
   };
 
-  const handleDelete = async () => {
-    if (!utilityToDelete) return;
-    try {
-      setError('');
-      await api.delete(`/api/utilities/${utilityToDelete.id}`);
-      handleCloseConfirm();
-      fetchUtilities(); // Refresh the list
-    } catch (err) {
-      console.error("Error deleting utility:", err);
-      setError(err.response?.data?.msg || 'Failed to delete utility.');
-      handleCloseConfirm();
-    }
-  };
+  // --- Delete functionality removed as backend route is missing ---
 
   return (
     <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
@@ -104,10 +89,11 @@ function UtilityManagement() {
         <Typography variant="h4" component="h1">
           Utility Management
         </Typography>
+        {/* Only Managers can add utilities based on backend */}
         {user && user.role === 'Maintenance Manager' && (
-          <Button 
-            variant="contained" 
-            startIcon={<AddIcon />} 
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
             onClick={handleOpenAddDialog}
             sx={{ mt: { xs: 2, md: 0 } }}
           >
@@ -116,13 +102,14 @@ function UtilityManagement() {
         )}
       </Box>
 
-      {/* --- Add/Edit Utility Dialog --- */}
+      {/* --- Add Utility Dialog --- */}
       <Dialog open={open} onClose={handleCloseDialog}>
         <DialogTitle>Add New Utility</DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
-            Define a utility to track (e.g., POWER, WATER). Technicians will report this via WhatsApp using its name.
+            Define a utility to track (e.g., POWER). Technicians will report readings via WhatsApp using the 'Keyword'.
           </DialogContentText>
+          {/* Show error inside the dialog */}
           {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
           <TextField
             autoFocus
@@ -134,6 +121,7 @@ function UtilityManagement() {
             variant="outlined"
             value={formData.name}
             onChange={handleFormChange}
+            required // Add required attribute
           />
           <TextField
             margin="dense"
@@ -144,17 +132,20 @@ function UtilityManagement() {
             variant="outlined"
             value={formData.unit}
             onChange={handleFormChange}
+            required // Add required attribute
           />
+          {/* --- FIX: Changed field to 'keyword' --- */}
           <TextField
             margin="dense"
-            name="alert_threshold_percent"
-            label="Alert Threshold (%)"
-            type="number"
+            name="keyword"
+            label="WhatsApp Keyword (e.g. power)"
+            type="text"
             fullWidth
             variant="outlined"
-            value={formData.alert_threshold_percent}
+            value={formData.keyword}
             onChange={handleFormChange}
-            helperText="Send alert if reading spikes by this percent"
+            helperText="Single lowercase word used to log readings (e.g., 'power 123')"
+            required // Add required attribute
           />
         </DialogContent>
         <DialogActions>
@@ -163,43 +154,29 @@ function UtilityManagement() {
         </DialogActions>
       </Dialog>
 
-      {/* --- Delete Confirmation Dialog --- */}
-      <Dialog open={confirmOpen} onClose={handleCloseConfirm}>
-        <DialogTitle>Confirm Deletion</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            Are you sure you want to delete the utility: <strong>{utilityToDelete?.name}</strong>? 
-            This will also delete all of its historical readings. This action cannot be undone.
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleCloseConfirm}>Cancel</Button>
-          <Button onClick={handleDelete} color="error" variant="contained">Delete</Button>
-        </DialogActions>
-      </Dialog>
+      {/* --- Delete Confirmation Dialog Removed --- */}
 
       {/* --- Utilities List --- */}
       {loading && <CircularProgress />}
-      {!loading && error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
-      
-      {!loading && !error && utilities.map(utility => (
+      {/* Display general fetch errors outside the dialog */}
+      {!loading && error && !open && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+
+      {!loading && utilities.map(utility => (
         <Card key={utility.id} sx={{ mb: 2 }}>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <CardContent sx={{ flexGrow: 1 }}>
               <Typography variant="h6">{utility.name}</Typography>
               <Typography color="text.secondary">Unit: {utility.unit}</Typography>
-              <Typography variant="body2">Alert Threshold: {utility.alert_threshold_percent}% Spike</Typography>
+              {/* Display keyword used for WhatsApp */}
+              <Typography variant="body2">WhatsApp Keyword: {utility.keyword || 'Not Set'}</Typography>
             </CardContent>
-            {user && user.role === 'Maintenance Manager' && (
-              <Box sx={{ pr: 2 }}>
-                <IconButton onClick={() => handleDeleteClick(utility)} color="error">
-                  <DeleteIcon />
-                </IconButton>
-              </Box>
-            )}
+            {/* --- Delete Button Removed --- */}
           </Box>
         </Card>
       ))}
+      {!loading && utilities.length === 0 && !error && (
+          <Typography sx={{mt: 2}}>No utilities defined yet. Click 'Add New Utility' to create one.</Typography>
+      )}
     </Container>
   );
 }

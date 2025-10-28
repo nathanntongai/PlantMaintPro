@@ -26,7 +26,7 @@ function App() {
       <Route path="/register" element={!token ? <Register /> : <Navigate to="/" />} />
       
       <Route element={<ProtectedRoutes />}>
-        <Route path="/dashboard" element={<Dashboard/>} />
+        <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/machines" element={<MachineManagement />} />
         <Route path="/preventive-maintenance" element={<PreventiveMaintenance />} />
         <Route path="/user-management" element={<UserManagement />} />

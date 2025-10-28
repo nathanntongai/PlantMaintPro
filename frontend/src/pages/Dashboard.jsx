@@ -37,7 +37,7 @@ function Dashboard() {
         const [kpiRes, breakdownRes, machineRes] = await Promise.all([
           api.get('/api/kpis'),
           api.get('/api/breakdowns/active'),
-          api.get('/api/machines')
+          api.get('/machines')
         ]);
 
         setKpis(kpiRes.data);

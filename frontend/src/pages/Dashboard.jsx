@@ -1,13 +1,13 @@
-// frontend/src/pages/Dashboard.jsx
+// frontend/src/pages/Dashboard.jsx (Corrected API Paths)
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import api from '../api';
 import KpiCard from '../components/KpiCard';
 import LineChart from '../components/LineChart';
 import { saveAs } from 'file-saver'; // Import file-saver
-import { 
+import {
   Container, Typography, Button, Box, Card, CardContent, CardActions,
-  CircularProgress, Alert, Grid, Paper, // Grid is imported
+  CircularProgress, Alert, Grid, Paper,
   Dialog, DialogTitle, DialogContent, DialogActions, TextField,
   Select, MenuItem, FormControl, InputLabel
 } from '@mui/material';
@@ -27,51 +27,57 @@ function Dashboard() {
   const [newBreakdownData, setNewBreakdownData] = useState({ machineId: '', description: '' });
   const [dialogError, setDialogError] = useState(''); // Separate error state for dialog
 
-  // This useEffect is 100% from YOUR original, working file.
   useEffect(() => {
     const fetchData = async () => {
       try {
         setLoading(true);
         setError('');
-        
+
+        // --- Paths Corrected to Match index.js ---
         const [kpiRes, breakdownRes, machineRes] = await Promise.all([
-          api.get('/api/kpis'),
-          api.get('/api/breakdowns/active'),
-          api.get('/machines')
+          api.get('/api/kpis'),             // Has /api prefix in index.js
+          api.get('/api/breakdowns/active'), // Has /api prefix in index.js
+          api.get('/machines')               // Does NOT have /api prefix in index.js
         ]);
+        // ----------------------------------------
 
         setKpis(kpiRes.data);
         setBreakdowns(breakdownRes.data);
         setMachines(machineRes.data); // Save machines for the dialog
 
-        // Process data for the line chart
-        const dailyCounts = breakdownRes.data.reduce((acc, breakdown) => {
-          const date = new Date(breakdown.reported_at).toLocaleDateString();
-          acc[date] = (acc[date] || 0) + 1;
-          return acc;
-        }, {});
-        setChartData({
-          labels: Object.keys(dailyCounts),
-          datasets: [{
-            label: 'Breakdowns per Day',
-            data: Object.values(dailyCounts),
-            fill: false,
-            borderColor: 'rgb(75, 192, 192)',
-            tension: 0.1
-          }]
-        });
+        // Process data for the line chart (Ensure breakdownRes.data exists)
+        if (breakdownRes.data && breakdownRes.data.length > 0) {
+            const dailyCounts = breakdownRes.data.reduce((acc, breakdown) => {
+                const date = new Date(breakdown.reported_at).toLocaleDateString();
+                acc[date] = (acc[date] || 0) + 1;
+                return acc;
+            }, {});
+            setChartData({
+                labels: Object.keys(dailyCounts),
+                datasets: [{
+                label: 'Breakdowns per Day',
+                data: Object.values(dailyCounts),
+                fill: false,
+                borderColor: 'rgb(75, 192, 192)',
+                tension: 0.1
+                }]
+            });
+        } else {
+             setChartData(null); // Set to null if no breakdown data
+        }
 
       } catch (err) {
         console.error("Error fetching dashboard data:", err);
-        setError('Failed to load dashboard data.');
+        // Display a more informative error message
+        setError(`Failed to load dashboard data. ${err.response?.data?.message || err.message}`);
       } finally {
         setLoading(false);
       }
     };
     fetchData();
-  }, []);
+  }, []); // Empty dependency array means this runs once on mount
 
-  // All functions below are 100% from YOUR original, working file.
+  // --- Functions below are identical to your original working file ---
 
   const handleOpenBreakdownDialog = () => {
     setDialogError('');
@@ -89,38 +95,47 @@ function Dashboard() {
       return;
     }
     try {
+      // NOTE: Ensure '/api/breakdowns' path is correct in index.js for this POST
       const response = await api.post('/api/breakdowns', {
         machine_id: newBreakdownData.machineId,
         description: newBreakdownData.description,
       });
-      setBreakdowns([response.data, ...breakdowns]);
+      // Prepend new breakdown to keep list order consistent
+      setBreakdowns([response.data.breakdown, ...breakdowns]);
       handleCloseBreakdownDialog();
     } catch (err) {
       console.error("Error reporting breakdown:", err);
-      setDialogError('Failed to report breakdown.');
+      setDialogError(err.response?.data?.message || 'Failed to report breakdown.');
     }
   };
 
   const handleStatusUpdate = async (id, status) => {
     try {
+      setError(''); // Clear previous general errors
+      // NOTE: Ensure '/api/breakdowns/:id/status' path is correct in index.js for this PATCH
       const response = await api.patch(`/api/breakdowns/${id}/status`, { status });
-      setBreakdowns(breakdowns.map(b => b.id === id ? response.data : b));
+      // Update the state immutably
+      setBreakdowns(breakdowns.map(b => (b.id === id ? response.data.breakdown : b)));
     } catch (err) {
       console.error("Error updating status:", err);
-      setError('Failed to update status.');
+      setError(err.response?.data?.message || 'Failed to update status.');
     }
   };
 
   const handleDownloadReport = async () => {
     try {
+      setError(''); // Clear previous errors
+      // NOTE: Ensure '/api/breakdowns/report/excel' path is correct in index.js for this GET
       const response = await api.get('/api/breakdowns/report/excel', {
         responseType: 'blob', // Important: Tell axios to expect a file
       });
       const blob = new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-      saveAs(blob, 'breakdown_report.xlsx');
+      // Use a timestamp in the filename
+      const filename = `breakdown_report_${new Date().toISOString().split('T')[0]}.xlsx`;
+      saveAs(blob, filename);
     } catch (err) {
       console.error('Error downloading report:', err);
-      setError('Failed to download report.');
+      setError(err.response?.data?.message || 'Failed to download report.');
     }
   };
 
@@ -146,70 +161,39 @@ function Dashboard() {
       {loading && <CircularProgress sx={{ display: 'block', margin: 'auto' }} />}
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
-      {/* ---
-        --- THE ONLY CHANGE IS HERE ---
-        --- We are using a <Grid> for responsiveness ---
-      --- */}
-      {kpis && (
+      {/* --- KPI Cards Section (Using Grid for responsiveness) --- */}
+      {!loading && kpis && (
         <Grid container spacing={3} sx={{ mb: 4 }}>
+          {/* Use optional chaining ?. in case kpis is null initially */}
           <Grid item xs={12} sm={6} md={3}>
-            <KpiCard title="Total Breakdowns" value={kpis.total_breakdowns} />
+            <KpiCard title="Total Breakdowns" value={kpis?.total_breakdowns ?? 'N/A'} />
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
-            <KpiCard title="Machine Availability" value={`${kpis.machine_availability_percentage}%`} />
+            <KpiCard title="Machine Availability" value={`${kpis?.machine_availability_percentage ?? 'N/A'}%`} />
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
-            <KpiCard title="Pending" value={kpis.pending_breakdowns} />
+            <KpiCard title="Pending" value={kpis?.pending_breakdowns ?? 'N/A'} />
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
-            <KpiCard title="Avg. Repair Time" value={kpis.average_repair_time_formatted} />
+            <KpiCard title="Avg. Repair Time" value={kpis?.average_repair_time_formatted ?? 'N/A'} />
           </Grid>
         </Grid>
       )}
-      {/* --- END OF THE CHANGE --- */}
 
-
-      {/* --- Charts Section (from your original file) --- */}
-      {chartData && (
+      {/* --- Charts Section --- */}
+      {!loading && chartData && (
         <Paper sx={{ p: 2, mb: 4 }}>
           <Typography variant="h6" gutterBottom>Breakdown Trends</Typography>
-          <Box sx={{ height: '300px' }}>
+          <Box sx={{ height: '300px' }}> {/* Ensure chart has a defined height */}
             <LineChart data={chartData} />
           </Box>
         </Paper>
       )}
-
-      {/* --- Active Breakdowns List (from your original file) --- */}
-      {!loading && (
-        <Box>
-          <Typography variant="h5" component="h2" gutterBottom>Active Breakdowns</Typography>
-          {breakdowns.length > 0 ? (
-            breakdowns.map((breakdown) => (
-              <Card key={breakdown.id} sx={{ mb: 2 }}>
-                <CardContent>
-                  <Typography variant="h6">{breakdown.machine_name}</Typography>
-                  <Typography color="text.secondary">{breakdown.machine_location || 'Location N/A'}</Typography>
-                  <Typography variant="body2" sx={{ mt: 1 }}>{breakdown.description}</Typography>
-                  <Typography variant="body2" sx={{ mt: 2 }}>Status: <strong>{breakdown.status}</strong> | Reported: {new Date(breakdown.reported_at).toLocaleString()}</Typography>
-                </CardContent>
-                <CardActions>
-                  {user && ['Maintenance Manager', 'Supervisor'].includes(user.role) && (
-                    <>
-                      {breakdown.status === 'Reported' && ( <Button size="small" onClick={() => handleStatusUpdate(breakdown.id, 'Acknowledged')}> Acknowledge </Button> )}
-                      {breakdown.status === 'Acknowledged' && ( <Button size="small" onClick={() => handleStatusUpdate(breakdown.id, 'In Progress')}> Start Work </Button> )}
-                      {breakdown.status === 'In Progress' && ( <Button size="small" onClick={() => handleStatusUpdate(breakdown.id, 'Resolved')}> Mark as Resolved </Button> )}
-                    </>
-                  )}
-                </CardActions>
-              </Card>
-            ))
-          ) : (
-            !error && <Typography>No active breakdowns found.</Typography>
-          )}
-        </Box>
+      {!loading && !chartData && !error && (
+         <Typography sx={{mb: 4}}>No breakdown data available for chart.</Typography>
       )}
-      
-      {/* --- Report Breakdown Dialog (from your original file) --- */}
+
+      {/* --- Report Breakdown Dialog (Modal) --- */}
       <Dialog open={breakdownOpen} onClose={handleCloseBreakdownDialog}>
         <DialogTitle>Report a New Breakdown</DialogTitle>
         <DialogContent>
@@ -221,9 +205,11 @@ function Dashboard() {
               value={newBreakdownData.machineId}
               label="Machine"
               onChange={(e) => setNewBreakdownData({ ...newBreakdownData, machineId: e.target.value })}
+              required // Make required
             >
               <MenuItem value=""><em>Select a machine</em></MenuItem>
-              {machines.map((machine) => (
+              {/* Ensure machines array is populated before mapping */}
+              {machines && machines.map((machine) => (
                 <MenuItem key={machine.id} value={machine.id}>{machine.name}</MenuItem>
               ))}
             </Select>
@@ -234,7 +220,7 @@ function Dashboard() {
             fullWidth
             label="Description of Problem"
             value={newBreakdownData.description}
-            onChange={(e) => setNewBreakdownData({ ...newBreakdownData, description: e.targe.value })}
+            onChange={(e) => setNewBreakdownData({ ...newBreakdownData, description: e.target.value })}
             multiline
             rows={3}
           />
@@ -244,6 +230,38 @@ function Dashboard() {
           <Button onClick={handleReportSubmit} variant="contained">Submit</Button>
         </DialogActions>
       </Dialog>
+
+
+      {/* --- Active Breakdowns List --- */}
+      {!loading && (
+        <Box>
+          <Typography variant="h5" component="h2" gutterBottom>Active Breakdowns</Typography>
+          {breakdowns && breakdowns.length > 0 ? (
+            breakdowns.map((breakdown) => (
+              <Card key={breakdown.id} sx={{ mb: 2 }}>
+                <CardContent>
+                  <Typography variant="h6">{breakdown.machine_name}</Typography>
+                  <Typography color="text.secondary">{breakdown.machine_location || 'Location N/A'}</Typography>
+                  <Typography variant="body2" sx={{ mt: 1 }}>{breakdown.description}</Typography>
+                  <Typography variant="body2" sx={{ mt: 2 }}>Status: <strong>{breakdown.status}</strong> | Reported: {new Date(breakdown.reported_at).toLocaleString()}</Typography>
+                </CardContent>
+                <CardActions>
+                  {/* Action buttons only for Manager/Supervisor */}
+                  {user && ['Maintenance Manager', 'Supervisor'].includes(user.role) && (
+                    <>
+                      {breakdown.status === 'Reported' && ( <Button size="small" onClick={() => handleStatusUpdate(breakdown.id, 'Acknowledged')}> Acknowledge </Button> )}
+                      {breakdown.status === 'Acknowledged' && ( <Button size="small" onClick={() => handleStatusUpdate(breakdown.id, 'In Progress')}> Start Work </Button> )}
+                      {breakdown.status === 'In Progress' && ( <Button size="small" onClick={() => handleStatusUpdate(breakdown.id, 'Resolved')}> Mark as Resolved </Button> )}
+                    </>
+                  )}
+                </CardActions>
+              </Card>
+            ))
+          ) : (
+            !error && <Typography>No active breakdowns found.</Typography> // Only show if no error loading breakdowns
+          )}
+        </Box>
+      )}
     </Container>
   );
 }

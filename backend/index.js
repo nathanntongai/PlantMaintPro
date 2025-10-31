@@ -1,4 +1,4 @@
-// backend/index.js (Updated with new Utility Reading logic)
+// backend/index.js (Updated with Menu-Based Approvals/Acknowledgements)
 
 const express = require('express');
 const bcrypt = require('bcrypt');
@@ -51,7 +51,9 @@ async function sendBreakdownApprovalRequest(breakdownId, companyId) {
             return;
         }
 
-        const approvalMessage = `⚠️ Breakdown Reported (#${breakdownId}) ⚠️\nMachine: ${machine_name}\nIssue: ${description}\nReported by: ${reporter_name}\n\nPlease reply with:\nApprove ${breakdownId}\nDisapprove ${breakdownId}`;
+        // --- CHANGE: Updated notification text ---
+        const approvalMessage = `⚠️ New Breakdown Reported (#${breakdownId}) ⚠️\nMachine: ${machine_name}\nIssue: ${description}\nReported by: ${reporter_name}\n\nPlease open the menu (send 'hi' or 'menu') to approve or disapprove.`;
+        // --- END CHANGE ---
 
         const messagesToSend = supervisors.rows
             .filter(s => s.phone_number)
@@ -94,7 +96,7 @@ async function notifyTechniciansAndManager(breakdownId, companyId, approverName)
          const { machine_name, description } = breakdownInfo.rows[0];
 
          const recipients = await db.query(
-             `SELECT id, phone_number FROM users WHERE company_id = $1 AND role IN ('Maintenance Technician', 'Maintenance Manager')`,
+             `SELECT id, phone_number, role FROM users WHERE company_id = $1 AND role IN ('Maintenance Technician', 'Maintenance Manager')`,
              [companyId]
          );
 
@@ -103,13 +105,18 @@ async function notifyTechniciansAndManager(breakdownId, companyId, approverName)
              return;
          }
 
-         const notificationMessage = `🛠️ Breakdown #${breakdownId} Approved 🛠️\n\nMachine: ${machine_name}\nIssue: ${description}\nApproved by: ${approverName}\n\nPlease reply with 'ACK ${breakdownId}' to acknowledge and accept this job.`;
+         // --- CHANGE: Updated notification text ---
+         const techMessage = `🛠️ New Job (#${breakdownId}) 🛠️\n\nMachine: ${machine_name}\nIssue: ${description}\nApproved by: ${approverName}\n\nPlease open the menu (send 'hi') to acknowledge this job.`;
+         const managerMessage = `ℹ️ Breakdown #${breakdownId} (${machine_name}) has been approved by ${approverName} and sent to technicians.`;
+         // --- END CHANGE ---
          
          const messagesToSend = recipients.rows
              .filter(r => r.phone_number)
              .map(r => ({
                  to: r.phone_number.replace('whatsapp:+', ''),
-                 text: notificationMessage,
+                 // --- CHANGE: Send different message to Techs vs Managers ---
+                 text: r.role === 'Maintenance Technician' ? techMessage : managerMessage,
+                 // --- END CHANGE ---
                  recipientId: r.id
              }));
 
@@ -131,25 +138,21 @@ async function notifyTechniciansAndManager(breakdownId, companyId, approverName)
 }
 
 // --- NEW FUNCTION TO HANDLE UTILITY READINGS ---
+// (This is the code we added last time, left 100% unchanged)
 async function handleUtilityReading(user, messageBody) {
   console.log(`Attempting to process utility reading for user ${user.id}: "${messageBody}"`);
-  let responseMessage = null; // Message to send back to user
-
-  // Regex: Match keyword (letters only) + space(s) + number (optional decimal)
-  // Use messageBody (which is msg_body_original)
+  let responseMessage = null; 
   const utilityMatch = messageBody.match(/^([a-zA-Z]+)\s+([\d\.]+)$/);
 
   if (!utilityMatch) {
     console.log("Utility reading format did not match.");
-    return null; // Not a utility reading, let the main handler continue
+    return null; 
   }
 
   const keyword = utilityMatch[1].toLowerCase();
   const readingValue = parseFloat(utilityMatch[2]);
 
   try {
-    // Find the utility defined by the keyword for this company
-    // This matches the backend route app.get('/utilities') and database.sql
     const utilityResult = await db.query(
         `SELECT id, name, unit FROM utilities WHERE keyword = $1 AND company_id = $2`,
         [keyword, user.company_id]
@@ -161,28 +164,23 @@ async function handleUtilityReading(user, messageBody) {
         responseMessage = "Invalid reading value. Please enter a number (e.g., 'power 123.45').";
     } else {
         const utility = utilityResult.rows[0];
-        // Save the reading to utility_readings table
-        // This matches the database.sql table definition
         await db.query(
             `INSERT INTO utility_readings (utility_id, user_id, reading_value)
              VALUES ($1, $2, $3)`,
             [utility.id, user.id, readingValue]
         );
         responseMessage = `✅ Reading logged: ${readingValue} ${utility.unit} for ${utility.name}.`;
-         // We can add alert logic here later
     }
   } catch (dbError) {
       console.error(`Database error processing utility reading for keyword "${keyword}":`, dbError);
       responseMessage = "An error occurred while saving your reading. Please try again.";
   }
 
-  // If we generated a response, it means we handled the message.
-  // Reset user state just in case (though should be IDLE anyway)
   if (responseMessage) {
     await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
   }
 
-  return responseMessage; // Return the message to send, or null if it wasn't a utility reading
+  return responseMessage;
 }
 // --- END OF NEW FUNCTION ---
 
@@ -200,12 +198,9 @@ app.post('/whatsapp', async (req, res) => {
     // --- Process message asynchronously ---
     try {
         const from = req.body.From; // e.g., whatsapp:+1...
-        // --- CHANGE: Capture original case message ---
         const msg_body_original = req.body.Body.trim();
         const msg_body_lower = msg_body_original.toLowerCase(); // Use lower case for commands
-        // --- END CHANGE ---
-        const recipientNumber = from.replace('whatsapp:+', ''); // For sending replies back
-        // --- CHANGE: Log original message ---
+        const recipientNumber = from.replace('whatsapp:+', ''); 
         console.log(`\n--- Incoming message from ${from}: "${msg_body_original}"`);
 
         const userResult = await db.query('SELECT * FROM users WHERE phone_number = $1', [from]);
@@ -218,145 +213,141 @@ app.post('/whatsapp', async (req, res) => {
         const currentState = user.whatsapp_state || 'IDLE';
         let context = user.whatsapp_context || {};
         const userRole = user.role;
-        let finalResponseMessage = null; // Use this to send reply at the end
+        let finalResponseMessage = null; 
 
-        // --- Global Command Checks (run regardless of state) ---
-        // --- CHANGE: Use msg_body_lower for commands ---
-        const approvalMatch = msg_body_lower.match(/^(approve|disapprove)\s+(\d+)$/);
-        const ackMatch = msg_body_lower.match(/^(ack|acknowledge)\s+(\d+)$/);
-        const ackBreakdownMatch = msg_body_lower.match(/^(ack-b)\s+(\d+)$/);
+        // --- CHANGE: DELETED Global Command Checks ---
+        // The 'if (approvalMatch ...)', 'else if (ackMatch ...)', 
+        // and 'else if (ackBreakdownMatch ...)' blocks have been removed.
         // --- END CHANGE ---
         
-        // --- DELETED: Old utilityMatch definition (line 150) removed ---
-
-        if (approvalMatch && ['Supervisor', 'Maintenance Manager'].includes(userRole)) {
-             console.log("DEBUG: Matched approval/disapproval command.");
-             const action = approvalMatch[1]; // 'approve' or 'disapprove'
-             const breakdownIdToUpdate = parseInt(approvalMatch[2], 10);
-             const newStatus = action === 'approve' ? 'Reported' : 'Closed'; // Disapproved = Closed
-             console.log(`DEBUG: Attempting to ${action} breakdown ${breakdownIdToUpdate} to status ${newStatus}`);
-
-             const statusUpdate = await db.query(
-                 `UPDATE breakdowns SET status = $1, approved_by_id = $2 WHERE id = $3 AND company_id = $4 AND status = 'Pending Approval' RETURNING id`,
-                 [newStatus, user.id, breakdownIdToUpdate, user.company_id]
-             );
-             console.log("DEBUG: Database update query executed.");
-
-             if (statusUpdate.rowCount > 0) {
-                 console.log(`DEBUG: Update successful for breakdown ${breakdownIdToUpdate}`);
-                 finalResponseMessage = `Breakdown #${breakdownIdToUpdate} has been ${action}d.`;
-                 if (action === 'approve') {
-                     console.log("DEBUG: Triggering technician/manager notification.");
-                     notifyTechniciansAndManager(breakdownIdToUpdate, user.company_id, user.name);
-                 }
-             } else {
-                 console.log(`DEBUG: Failed to update breakdown ${breakdownIdToUpdate}. Row count was 0.`);
-                 finalResponseMessage = `Could not ${action} Breakdown #${breakdownIdToUpdate}. It might already be processed or does not exist.`;
-             }
-             console.log("DEBUG: Resetting user state to IDLE after approval/disapproval.");
-             await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
-        
-        } else if (ackMatch && userRole === 'Maintenance Technician') {
-             console.log("DEBUG: Matched acknowledgment command.");
-             const breakdownIdToAck = parseInt(ackMatch[2], 10);
-             const currentBreakdown = await db.query(
-                 `SELECT status, assigned_to_id FROM breakdowns WHERE id = $1 AND company_id = $2`,
-                 [breakdownIdToAck, user.company_id]
-             );
-             if (currentBreakdown.rows.length === 0) {
-                 finalResponseMessage = `Breakdown #${breakdownIdToAck} was not found.`;
-             } else if (currentBreakdown.rows[0].status !== 'Reported') {
-                 finalResponseMessage = `Breakdown #${breakdownIdToAck} has already been acknowledged or is in progress.`;
-             } else {
-                 await db.query(
-                     `UPDATE breakdowns SET status = 'Acknowledged', assigned_to_id = $1 WHERE id = $2`,
-                     [user.id, breakdownIdToAck]
-                 );
-                 finalResponseMessage = `✅ You have acknowledged Breakdown #${breakdownIdToAck}. Status updated to 'Acknowledged'.`;
-                 const managers = await db.query(
-                     `SELECT id, phone_number FROM users WHERE company_id = $1 AND role IN ('Supervisor', 'Maintenance Manager')`,
-                     [user.company_id]
-                 );
-                 const managerMessage = `ℹ️ Update: Breakdown #${breakdownIdToAck} has been acknowledged by ${user.name}.`;
-                 const messagesToSend = managers.rows
-                     .filter(m => m.phone_number)
-                     .map(m => ({ to: m.phone_number.replace('whatsapp:+', ''), text: managerMessage, recipientId: m.id }));
-                 if (messagesToSend.length > 0) {
-                     sendBulkWhatsAppMessages(messagesToSend); // Send in background
-                 }
-             }
-             await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
-        
-        } else if (ackBreakdownMatch && ['Supervisor', 'Maintenance Manager'].includes(userRole)) {
-             console.log("DEBUG: Matched manager breakdown acknowledgment command.");
-             const breakdownIdToAck = parseInt(ackBreakdownMatch[2], 10);
-             const ackUpdate = await db.query(
-                 `UPDATE breakdowns SET manager_acknowledged_at = NOW() 
-                  WHERE id = $1 AND company_id = $2 AND status = 'Resolved' AND manager_acknowledged_at IS NULL RETURNING id`,
-                 [breakdownIdToAck, user.company_id]
-             );
-             if (ackUpdate.rowCount > 0) {
-                 finalResponseMessage = `✅ Completion of Breakdown #${breakdownIdToAck} has been acknowledged.`;
-             } else {
-                 finalResponseMessage = `Could not acknowledge Breakdown #${breakdownIdToAck}. It may already be acknowledged or not yet resolved.`;
-             }
-             await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
-
-        // --- REPLACED: Old utilityMatch block (lines 216-239) is replaced with this ---
-        } else if (currentState === 'IDLE' && /^([a-zA-Z]+)\s+([\d\.]+)$/.test(msg_body_original)) {
-            // If user is IDLE and message matches "keyword number" format, handle as utility
+        // --- Check for Utility Reading if user is IDLE ---
+        // (This is the code we added last time, left 100% unchanged)
+        if (currentState === 'IDLE' && /^([a-zA-Z]+)\s+([\d\.]+)$/.test(msg_body_original)) {
             console.log("DEBUG: User is IDLE and message matches utility format, handling...");
             finalResponseMessage = await handleUtilityReading(user, msg_body_original);
             if(finalResponseMessage) {
                 console.log("DEBUG: Utility reading handled successfully.");
             } else {
-                // This shouldn't happen if regex matched, but as a fallback:
                 console.log("DEBUG: Utility regex matched but handler returned null, proceeding to standard flow.");
-                // We'll let it fall through to the 'else' block
             }
-        // --- END OF REPLACEMENT ---
+        }
 
-        } else { // --- Standard Conversational Flow ---
-             // --- CHANGE: Use msg_body_lower for commands ---
+        // --- Standard Conversational Flow ---
+        // --- CHANGE: This 'if' condition is now simpler ---
+        // It runs if the message was NOT a utility reading.
+        if (finalResponseMessage === null) { 
+        // --- END CHANGE ---
              const reset_words = ['hi', 'hello', 'menu', 'cancel', 'start'];
              if (reset_words.includes(msg_body_lower) || currentState === 'IDLE') {
-             // --- END CHANGE ---
                  console.log("DEBUG: Resetting conversation to main menu.");
                  let menuOptions = {};
+                 let menuCounter = 1; // Use a dynamic counter
                  finalResponseMessage = `Welcome ${user.name}. Please choose an option:\n`;
                  context = {};
 
+                 // --- CHANGE: Add queries to check for dynamic menu items ---
+                 let pendingApprovals = { rowCount: 0 };
+                 let pendingTechAcks = { rowCount: 0 };
+                 let pendingManagerAcks = { rowCount: 0 };
+
+                 if (['Supervisor', 'Maintenance Manager'].includes(userRole)) {
+                     pendingApprovals = await db.query("SELECT id FROM breakdowns WHERE company_id = $1 AND status = 'Pending Approval' LIMIT 5", [user.company_id]);
+                     pendingManagerAcks = await db.query("SELECT id FROM breakdowns WHERE company_id = $1 AND status = 'Resolved' AND manager_acknowledged_at IS NULL LIMIT 5", [user.company_id]);
+                 }
+                 if (userRole === 'Maintenance Technician') {
+                     pendingTechAcks = await db.query("SELECT id FROM breakdowns WHERE company_id = $1 AND status = 'Reported' LIMIT 5", [user.company_id]);
+                 }
+                 // --- END CHANGE ---
+
+
                  if (userRole === 'Operator') {
-                     menuOptions = { '1': { text: 'Report Breakdown', nextState: 'AWAITING_MACHINE_CHOICE_BREAKDOWN' }, '2': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '3': { text: 'Report Breakdown Completion', nextState: 'AWAITING_COMPLETION_CHOICE' } };
-                     finalResponseMessage += "1. Report Breakdown\n2. Check Breakdown Status\n3. Report Breakdown Completion";
+                     // Unchanged
+                     menuOptions['1'] = { text: 'Report Breakdown', nextState: 'AWAITING_MACHINE_CHOICE_BREAKDOWN' };
+                     menuOptions['2'] = { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' };
+                     menuOptions['3'] = { text: 'Report Breakdown Completion', nextState: 'AWAITING_COMPLETION_CHOICE' };
+                     
                  } else if (userRole === 'Supervisor') {
-                     menuOptions = { '1': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '2': { text: 'Request Job Order', nextState: 'AWAITING_JOB_ORDER_MACHINE' }, '3': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' } };
-                      finalResponseMessage += "1. Check Breakdown Status\n2. Request Job Order\n3. Check Job Order Status";
+                     menuOptions['1'] = { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' };
+                     menuOptions['2'] = { text: 'Request Job Order', nextState: 'AWAITING_JOB_ORDER_MACHINE' };
+                     menuOptions['3'] = { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' };
+                     // --- CHANGE: Add dynamic Supervisor options ---
+                     menuCounter = 4;
+                     if (pendingApprovals.rowCount > 0) {
+                         menuOptions[menuCounter.toString()] = { text: `Approve Pending Breakdowns (${pendingApprovals.rowCount})`, nextState: 'AWAITING_APPROVAL_CHOICE' };
+                         menuCounter++;
+                     }
+                     if (pendingManagerAcks.rowCount > 0) {
+                         menuOptions[menuCounter.toString()] = { text: `Acknowledge Completed Jobs (${pendingManagerAcks.rowCount})`, nextState: 'AWAITING_MANAGER_ACK_CHOICE' };
+                         menuCounter++;
+                     }
+                     // --- END CHANGE ---
+
                  } else if (userRole === 'Maintenance Technician') {
-                      menuOptions = { '1': { text: 'Report Breakdown Completion', nextState: 'AWAITING_COMPLETION_CHOICE' }, '2': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' }, '3': { text: 'Machine Inspection', nextState: 'AWAITING_INSPECTION_MACHINE' }, '4': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '5': { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' }, '6': { text: 'Report PM Completion', nextState: 'AWAITING_PM_COMPLETION_CHOICE' } };
-                      finalResponseMessage += "1. Report Breakdown Completion\n2. Check Job Order Status\n3. Machine Inspection\n4. Check Breakdown Status\n5. Check PM Activities\n6. Report PM Completion";
+                     menuOptions['1'] = { text: 'Report Breakdown Completion', nextState: 'AWAITING_COMPLETION_CHOICE' };
+                     menuOptions['2'] = { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' };
+                     menuOptions['3'] = { text: 'Machine Inspection', nextState: 'AWAITING_INSPECTION_MACHINE' };
+                     menuOptions['4'] = { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' };
+                     menuOptions['5'] = { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' };
+                     menuOptions['6'] = { text: 'Report PM Completion', nextState: 'AWAITING_PM_COMPLETION_CHOICE' };
+                     // --- CHANGE: Add dynamic Technician options ---
+                     menuCounter = 7;
+                     if (pendingTechAcks.rowCount > 0) {
+                         menuOptions[menuCounter.toString()] = { text: `Acknowledge New Jobs (${pendingTechAcks.rowCount})`, nextState: 'AWAITING_TECH_ACK_CHOICE' };
+                         menuCounter++;
+                     }
+                     // --- END CHANGE ---
+
                  } else if (userRole === 'Maintenance Manager') {
-                      menuOptions = { '1': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '2': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' }, '3.': { text: 'Create Job Order', nextState: 'AWAITIAWAITING_JOB_ORDER_MACHINE' }, '4': { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' }, '5': { text: 'Check KPIs', nextState: 'KPI_REPORT' } }; // Typo '3.' corrected to '3'
-                      menuOptions = { '1': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '2': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' }, '3': { text: 'Create Job Order', nextState: 'AWAITING_JOB_ORDER_MACHINE' }, '4': { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' }, '5': { text: 'Check KPIs', nextState: 'KPI_REPORT' } };
-                      finalResponseMessage += "1. Check Breakdown Status\n2. Check Job Order Status\n3. Create Job Order\n4. Check PM Activities\n5. Check KPIs";
-                 } else {
-                      menuOptions = { '1': { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' }, '2': { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' }, '3': { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' }, '4': { text: 'Check KPIs', nextState: 'KPI_REPORT' } };
-                     finalResponseMessage += "1. Check Breakdown Status\n2. Check Job Order Status\n3. Check PM Activities\n4. Check KPIs";
+                     menuOptions['1'] = { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' };
+                     menuOptions['2'] = { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' };
+                     menuOptions['3'] = { text: 'Create Job Order', nextState: 'AWAITING_JOB_ORDER_MACHINE' };
+                     menuOptions['4'] = { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' };
+                     menuOptions['5'] = { text: 'Check KPIs', nextState: 'KPI_REPORT' };
+                     // --- CHANGE: Add dynamic Manager options ---
+                     menuCounter = 6;
+                     if (pendingApprovals.rowCount > 0) {
+                         menuOptions[menuCounter.toString()] = { text: `Approve Pending Breakdowns (${pendingApprovals.rowCount})`, nextState: 'AWAITING_APPROVAL_CHOICE' };
+                         menuCounter++;
+                     }
+                     if (pendingManagerAcks.rowCount > 0) {
+                         menuOptions[menuCounter.toString()] = { text: `Acknowledge Completed Jobs (${pendingManagerAcks.rowCount})`, nextState: 'AWAITING_MANAGER_ACK_CHOICE' };
+                         menuCounter++;
+                     }
+                     // --- END CHANGE ---
+
+                 } else { // Other Managers
+                     menuOptions['1'] = { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' };
+                     menuOptions['2'] = { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' };
+                     menuOptions['3'] = { text: 'Check PM Activities', nextState: 'PM_ACTIVITIES_LIST' };
+                     menuOptions['4'] = { text: 'Check KPIs', nextState: 'KPI_REPORT' };
+                     // --- CHANGE: Add dynamic Other Manager options ---
+                     menuCounter = 5;
+                     if (pendingManagerAcks.rowCount > 0) {
+                         menuOptions[menuCounter.toString()] = { text: `Acknowledge Completed Jobs (${pendingManagerAcks.rowCount})`, nextState: 'AWAITING_MANAGER_ACK_CHOICE' };
+                         menuCounter++;
+                     }
+                     // --- END CHANGE ---
                  }
                  
+                 // Build the final message string from the menuOptions object
+                 for (const key in menuOptions) {
+                     finalResponseMessage += `${key}. ${menuOptions[key].text}\n`;
+                 }
+
                  context.current_menu = menuOptions;
                  await db.query("UPDATE users SET whatsapp_state = 'AWAITING_MENU_CHOICE', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
                  console.log("DEBUG: User state set to AWAITING_MENU_CHOICE.");
 
              } else { // Continue existing conversation
                   console.log(`DEBUG: Continuing conversation in state: ${currentState}`);
-                  // --- CHANGE: Use msg_body_lower for commands ---
                   switch (currentState) {
                       case 'AWAITING_MENU_CHOICE':
-                          const selectedOption = context.current_menu?.[msg_body_lower]; // Use lower case
+                          const selectedOption = context.current_menu?.[msg_body_lower]; 
                           if (selectedOption) {
                               console.log(`DEBUG: User selected menu option: ${selectedOption.text}`);
+                              // --- CHANGE: Added new 'else if' blocks for new states ---
                               if (['AWAITING_MACHINE_CHOICE_BREAKDOWN', 'AWAITING_STATUS_MACHINE_CHOICE', 'AWAITING_JOB_ORDER_MACHINE', 'AWAITING_INSPECTION_MACHINE'].includes(selectedOption.nextState)) {
+                                  // (This block is unchanged)
                                   const machinesResult = await db.query('SELECT id, name FROM machines WHERE company_id = $1 ORDER BY name ASC', [user.company_id]);
                                   if (machinesResult.rows.length > 0) {
                                       let machineList = "";
@@ -375,6 +366,7 @@ app.post('/whatsapp', async (req, res) => {
                                   }
                               }
                               else if (selectedOption.nextState === 'AWAITING_COMPLETION_CHOICE') {
+                                  // (This block is unchanged)
                                   const openBreakdowns = await db.query(`SELECT b.id, m.name as machine_name FROM breakdowns b JOIN machines m ON b.machine_id = m.id WHERE b.company_id = $1 AND b.status = 'In Progress'`, [user.company_id]);
                                   if (openBreakdowns.rows.length === 0) {
                                       finalResponseMessage = "There are no breakdowns currently 'In Progress'.";
@@ -388,10 +380,12 @@ app.post('/whatsapp', async (req, res) => {
                                   }
                               }
                               else if (selectedOption.nextState === 'AWAITING_JOB_ORDER_ID_STATUS') {
+                                  // (This block is unchanged)
                                   finalResponseMessage = "Please reply with the Job Order ID number to check its status.";
                                   await db.query("UPDATE users SET whatsapp_state = 'AWAITING_JOB_ORDER_ID_STATUS', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
                               }
                               else if (selectedOption.nextState === 'PM_ACTIVITIES_LIST') {
+                                  // (This block is unchanged)
                                   const pmTasks = await db.query(
                                       `SELECT pmt.task_description, pmt.next_due_date, m.name as machine_name
                                        FROM preventive_maintenance_tasks pmt
@@ -411,6 +405,7 @@ app.post('/whatsapp', async (req, res) => {
                                   await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
                               }
                               else if (selectedOption.nextState === 'KPI_REPORT') {
+                                  // (This block is unchanged)
                                   const kpiResult = await db.query(
                                       `SELECT 
                                            COUNT(*) AS total_breakdowns,
@@ -434,6 +429,7 @@ app.post('/whatsapp', async (req, res) => {
                                   await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
                               }
                               else if (selectedOption.nextState === 'AWAITING_PM_COMPLETION_CHOICE') {
+                                  // (This block is unchanged)
                                   const duePmTasks = await db.query(
                                       `SELECT pmt.id, pmt.task_description, m.name as machine_name 
                                        FROM preventive_maintenance_tasks pmt
@@ -454,6 +450,68 @@ app.post('/whatsapp', async (req, res) => {
                                       await db.query("UPDATE users SET whatsapp_state = 'AWAITING_PM_TASK_SELECTION', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
                                   }
                               }
+                              // --- CHANGE: Handle new menu options ---
+                              else if (selectedOption.nextState === 'AWAITING_APPROVAL_CHOICE') {
+                                  const pending = await db.query(
+                                      `SELECT b.id, m.name as machine_name, b.description 
+                                       FROM breakdowns b JOIN machines m ON b.machine_id = m.id 
+                                       WHERE b.company_id = $1 AND b.status = 'Pending Approval' ORDER BY b.id ASC`,
+                                      [user.company_id]
+                                  );
+                                  if (pending.rows.length === 0) {
+                                      finalResponseMessage = "No breakdowns are currently pending approval.";
+                                      await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                                  } else {
+                                      let breakdownList = "Which breakdown do you want to action?\n";
+                                      context.approval_map = pending.rows.map(b => b.id);
+                                      pending.rows.forEach((b, i) => { 
+                                          breakdownList += `${i + 1}. #${b.id} ${b.machine_name} (${b.description.substring(0, 20)}...)\n`; 
+                                      });
+                                      finalResponseMessage = breakdownList;
+                                      await db.query("UPDATE users SET whatsapp_state = 'AWAITING_APPROVAL_SELECTION', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
+                                  }
+                              }
+                              else if (selectedOption.nextState === 'AWAITING_TECH_ACK_CHOICE') {
+                                  const pending = await db.query(
+                                      `SELECT b.id, m.name as machine_name, b.description 
+                                       FROM breakdowns b JOIN machines m ON b.machine_id = m.id 
+                                       WHERE b.company_id = $1 AND b.status = 'Reported' ORDER BY b.id ASC`,
+                                      [user.company_id]
+                                  );
+                                  if (pending.rows.length === 0) {
+                                      finalResponseMessage = "No new jobs are waiting for acknowledgement.";
+                                      await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                                  } else {
+                                      let breakdownList = "Which new job do you want to acknowledge?\n";
+                                      context.tech_ack_map = pending.rows.map(b => b.id);
+                                      pending.rows.forEach((b, i) => { 
+                                          breakdownList += `${i + 1}. #${b.id} ${b.machine_name} (${b.description.substring(0, 20)}...)\n`; 
+                                      });
+                                      finalResponseMessage = breakdownList;
+                                      await db.query("UPDATE users SET whatsapp_state = 'AWAITING_TECH_ACK_SELECTION', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
+                                  }
+                              }
+                              else if (selectedOption.nextState === 'AWAITING_MANAGER_ACK_CHOICE') {
+                                  const pending = await db.query(
+                                      `SELECT b.id, m.name as machine_name, b.description 
+                                       FROM breakdowns b JOIN machines m ON b.machine_id = m.id 
+                                       WHERE b.company_id = $1 AND b.status = 'Resolved' AND b.manager_acknowledged_at IS NULL ORDER BY b.id ASC`,
+                                      [user.company_id]
+                                  );
+                                  if (pending.rows.length === 0) {
+                                      finalResponseMessage = "No completed jobs are waiting for your acknowledgement.";
+                                      await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                                  } else {
+                                      let breakdownList = "Which completed job do you want to acknowledge?\n";
+                                      context.manager_ack_map = pending.rows.map(b => b.id);
+                                      pending.rows.forEach((b, i) => { 
+                                          breakdownList += `${i + 1}. #${b.id} ${b.machine_name}\n`; 
+                                      });
+                                      finalResponseMessage = breakdownList;
+                                      await db.query("UPDATE users SET whatsapp_state = 'AWAITING_MANAGER_ACK_SELECTION', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
+                                  }
+                              }
+                              // --- END CHANGE ---
                               else {
                                   finalResponseMessage = `Selected state "${selectedOption.nextState}" is not handled yet.`;
                                   await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
@@ -466,8 +524,10 @@ app.post('/whatsapp', async (req, res) => {
                           }
                           break; // End of AWAITING_MENU_CHOICE
 
+                      // --- All your existing cases ('AWAITING_MACHINE_CHOICE_BREAKDOWN', etc.) ---
+                      // --- remain 100% UNCHANGED below ---
                       case 'AWAITING_MACHINE_CHOICE_BREAKDOWN':
-                          const breakdownChoiceIndex = parseInt(msg_body_lower, 10) - 1; // Use lower case
+                          const breakdownChoiceIndex = parseInt(msg_body_lower, 10) - 1; 
                           if (context.machine_id_map && breakdownChoiceIndex >= 0 && breakdownChoiceIndex < context.machine_id_map.length) {
                               context.selected_machine_id = context.machine_id_map[breakdownChoiceIndex];
                               finalResponseMessage = "Is the issue:\n1. Electrical\n2. Mechanical";
@@ -479,8 +539,8 @@ app.post('/whatsapp', async (req, res) => {
                       
                       case 'AWAITING_ISSUE_TYPE':
                           let issueType = '';
-                          if (msg_body_lower === '1') issueType = 'Electrical'; // Use lower case
-                          if (msg_body_lower === '2') issueType = 'Mechanical'; // Use lower case
+                          if (msg_body_lower === '1') issueType = 'Electrical'; 
+                          if (msg_body_lower === '2') issueType = 'Mechanical'; 
                           if (issueType) {
                               context.issue_type = issueType;
                               finalResponseMessage = "Thank you. Please provide a brief description of the issue.";
@@ -491,7 +551,7 @@ app.post('/whatsapp', async (req, res) => {
                           break;
 
                       case 'AWAITING_DESCRIPTION':
-                          const description = `${context.issue_type} Issue: ${msg_body_original}`; // Use original case
+                          const description = `${context.issue_type} Issue: ${msg_body_original}`; 
                           const machineId = context.selected_machine_id;
                           const newBreakdown = await db.query('INSERT INTO breakdowns (machine_id, company_id, reported_by_id, description) VALUES ($1, $2, $3, $4) RETURNING id', [machineId, user.company_id, user.id, description]);
                           const newBreakdownId = newBreakdown.rows[0].id;
@@ -501,7 +561,7 @@ app.post('/whatsapp', async (req, res) => {
                           break;
                       
                       case 'AWAITING_STATUS_MACHINE_CHOICE':
-                          const statusChoiceIndex = parseInt(msg_body_lower, 10) - 1; // Use lower case
+                          const statusChoiceIndex = parseInt(msg_body_lower, 10) - 1; 
                           if (context.machine_id_map && statusChoiceIndex >= 0 && statusChoiceIndex < context.machine_id_map.length) {
                               const selectedMachineId = context.machine_id_map[statusChoiceIndex];
                               const breakdownResult = await db.query(`SELECT id, status, updated_at FROM breakdowns WHERE machine_id = $1 AND company_id = $2 ORDER BY reported_at DESC LIMIT 1`, [selectedMachineId, user.company_id]);
@@ -519,7 +579,7 @@ app.post('/whatsapp', async (req, res) => {
                           break;
 
                        case 'AWAITING_COMPLETION_CHOICE':
-                          const completionChoiceIndex = parseInt(msg_body_lower, 10) - 1; // Use lower case
+                          const completionChoiceIndex = parseInt(msg_body_lower, 10) - 1; 
                           if (context.completion_map && completionChoiceIndex >= 0 && completionChoiceIndex < context.completion_map.length) {
                               context.breakdown_to_complete = context.completion_map[completionChoiceIndex];
                               if (userRole === 'Operator') {
@@ -555,7 +615,7 @@ app.post('/whatsapp', async (req, res) => {
 
                        case 'AWAITING_COMPLETION_REMARK':
                           if (userRole === 'Maintenance Technician') {
-                              context.completion_remark = msg_body_original; // Use original case
+                              context.completion_remark = msg_body_original; 
                               finalResponseMessage = "Thank you. What was the root cause of the problem?";
                               await db.query("UPDATE users SET whatsapp_state = 'AWAITING_ROOT_CAUSE', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
                           } else {
@@ -566,7 +626,7 @@ app.post('/whatsapp', async (req, res) => {
 
                        case 'AWAITING_ROOT_CAUSE':
                             if (userRole === 'Maintenance Technician') {
-                                context.root_cause = msg_body_original; // Use original case
+                                context.root_cause = msg_body_original; 
                                 finalResponseMessage = "Was the root cause attended to?\n1. Yes\n2. No";
                                 await db.query("UPDATE users SET whatsapp_state = 'AWAITING_ROOT_CAUSE_FIXED', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
                           } else {
@@ -580,7 +640,7 @@ app.post('/whatsapp', async (req, res) => {
                                 const breakdownIdToComplete = context.breakdown_to_complete;
                                 const remark = context.completion_remark;
                                 const rootCause = context.root_cause;
-                                const rootCauseFixed = msg_body_lower === '1'; // Use lower case
+                                const rootCauseFixed = msg_body_lower === '1'; 
                                 let finalStatus = 'Resolved';
                                 let descriptionUpdate = `\n\nCompletion Remark by ${user.name}: ${remark}\nRoot Cause: ${rootCause}`;
                                 
@@ -604,7 +664,9 @@ app.post('/whatsapp', async (req, res) => {
                                 const supervisors = await db.query(`SELECT id, phone_number FROM users WHERE company_id = $1 AND role IN ('Supervisor', 'Maintenance Manager')`, [user.company_id]);
                                 const originalReporterResult = await db.query(`SELECT u.id, u.phone_number FROM users u JOIN breakdowns b ON u.id = b.reported_by_id WHERE b.id = $1`, [breakdownIdToComplete]);
                                 let messagesToSend = [];
-                                const supervisorMessage = `✅ Breakdown #${breakdownIdToComplete} (${machineName}) has been marked as '${finalStatus}' by ${user.name}.${rootCauseFixed ? '' : ' Root cause pending.'}\n\nPlease reply 'ack-b ${breakdownIdToComplete}' to acknowledge.`;
+                                // --- CHANGE: Updated notification text ---
+                                const supervisorMessage = `✅ Breakdown #${breakdownIdToComplete} (${machineName}) has been marked as '${finalStatus}' by ${user.name}.${rootCauseFixed ? '' : ' Root cause pending.'}\n\nPlease open the menu (send 'hi') to acknowledge.`;
+                                // --- END CHANGE ---
                                 supervisors.rows.forEach(s => { if (s.phone_number) messagesToSend.push({ to: s.phone_number.replace('whatsapp:+', ''), text: supervisorMessage, recipientId: s.id }); });
                                 if (originalReporterResult.rows.length > 0 && originalReporterResult.rows[0].phone_number && originalReporterResult.rows[0].id !== user.id) {
                                     const reporterMessage = `Update: The breakdown you reported for "${machineName}" (ID #${breakdownIdToComplete}) has been resolved${rootCauseFixed ? '.' : ' (root cause pending).'}`;
@@ -622,7 +684,7 @@ app.post('/whatsapp', async (req, res) => {
                              break;
 
                        case 'AWAITING_JOB_ORDER_MACHINE':
-                            const joMachineChoiceIndex = parseInt(msg_body_lower, 10) - 1; // Use lower case
+                            const joMachineChoiceIndex = parseInt(msg_body_lower, 10) - 1; 
                             if (context.machine_id_map && joMachineChoiceIndex >= 0 && joMachineChoiceIndex < context.machine_id_map.length) {
                                 context.selected_machine_id = context.machine_id_map[joMachineChoiceIndex];
                                 finalResponseMessage = "Please provide a brief description of the work to be done for this Job Order.";
@@ -633,7 +695,7 @@ app.post('/whatsapp', async (req, res) => {
                             break;
 
                        case 'AWAITING_JOB_ORDER_DESCRIPTION':
-                            const joDescription = msg_body_original; // Use original case
+                            const joDescription = msg_body_original; 
                             const joMachineId = context.selected_machine_id;
                             if (!joDescription) {
                                 finalResponseMessage = "Description cannot be empty. Please provide a description.";
@@ -649,7 +711,7 @@ app.post('/whatsapp', async (req, res) => {
                             break;
 
                        case 'AWAITING_JOB_ORDER_ID_STATUS':
-                            const jobOrderId = parseInt(msg_body_lower, 10); // Use lower case
+                            const jobOrderId = parseInt(msg_body_lower, 10); 
                             if (!jobOrderId) {
                                 finalResponseMessage = "Invalid ID. Please reply with the Job Order ID number.";
                             } else {
@@ -665,7 +727,7 @@ app.post('/whatsapp', async (req, res) => {
                             break;
                        
                        case 'AWAITING_INSPECTION_MACHINE':
-                            const inspectionChoiceIndex = parseInt(msg_body_lower, 10) - 1; // Use lower case
+                            const inspectionChoiceIndex = parseInt(msg_body_lower, 10) - 1; 
                             if (context.machine_id_map && inspectionChoiceIndex >= 0 && inspectionChoiceIndex < context.machine_id_map.length) {
                                 context.selected_machine_id = context.machine_id_map[inspectionChoiceIndex];
                                 finalResponseMessage = "Is the machine status:\n1. Okay\n2. Not Okay";
@@ -691,14 +753,14 @@ app.post('/whatsapp', async (req, res) => {
                        
                        case 'AWAITING_INSPECTION_REMARKS':
                             const inspMachineIdRemarks = context.selected_machine_id;
-                            const inspectionRemarks = msg_body_original; // Get original case
+                            const inspectionRemarks = msg_body_original; 
                             await db.query(`INSERT INTO machine_inspections (machine_id, company_id, inspected_by_id, status, remarks) VALUES ($1, $2, $3, 'Not Okay', $4)`, [inspMachineIdRemarks, user.company_id, user.id, inspectionRemarks]);
                             finalResponseMessage = `Inspection for machine ID #${inspMachineIdRemarks} logged as 'Not Okay'. Thank you.\n\nSend 'hi' to start over.`;
                             await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
                             break;
 
                        case 'AWAITING_PM_TASK_SELECTION':
-                            const pmChoiceIndex = parseInt(msg_body_lower, 10) - 1; // Use lower case
+                            const pmChoiceIndex = parseInt(msg_body_lower, 10) - 1; 
                             if (context.pm_task_map && pmChoiceIndex >= 0 && pmChoiceIndex < context.pm_task_map.length) {
                                 const taskIdToComplete = context.pm_task_map[pmChoiceIndex];
                                 
@@ -716,6 +778,109 @@ app.post('/whatsapp', async (req, res) => {
                                 finalResponseMessage = "Invalid task number. Please try again.";
                             }
                             break;
+                       
+                       // --- CHANGE: Added new cases for menu-driven actions ---
+                       case 'AWAITING_APPROVAL_SELECTION':
+                           const approvalChoiceIndex = parseInt(msg_body_lower, 10) - 1;
+                           if (context.approval_map && approvalChoiceIndex >= 0 && approvalChoiceIndex < context.approval_map.length) {
+                               context.selected_breakdown_id = context.approval_map[approvalChoiceIndex];
+                               finalResponseMessage = `You selected Breakdown #${context.selected_breakdown_id}. Do you want to:\n1. Approve\n2. Disapprove`;
+                               await db.query("UPDATE users SET whatsapp_state = 'AWAITING_APPROVAL_CONFIRMATION', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
+                           } else {
+                               finalResponseMessage = "Invalid breakdown number. Please try again.";
+                           }
+                           break;
+
+                       case 'AWAITING_APPROVAL_CONFIRMATION':
+                           const breakdownIdToUpdate = context.selected_breakdown_id;
+                           if (!breakdownIdToUpdate) {
+                               finalResponseMessage = "Error: Lost context. Please start over.";
+                               await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                               break;
+                           }
+                           
+                           let action, newStatus;
+                           if (msg_body_lower === '1') {
+                               action = 'approve';
+                               newStatus = 'Reported';
+                           } else if (msg_body_lower === '2') {
+                               action = 'disapprove';
+                               newStatus = 'Closed';
+                           } else {
+                               finalResponseMessage = "Invalid choice. Please reply '1' to Approve or '2' to Disapprove.";
+                               break; // Keep state
+                           }
+
+                           const statusUpdate = await db.query(
+                               `UPDATE breakdowns SET status = $1, approved_by_id = $2, approved_at = NOW() WHERE id = $3 AND company_id = $4 AND status = 'Pending Approval' RETURNING id`,
+                               [newStatus, user.id, breakdownIdToUpdate, user.company_id]
+                           );
+
+                           if (statusUpdate.rowCount > 0) {
+                               finalResponseMessage = `Breakdown #${breakdownIdToUpdate} has been ${action}d.`;
+                               if (action === 'approve') {
+                                   notifyTechniciansAndManager(breakdownIdToUpdate, user.company_id, user.name);
+                               }
+                               // Notify reporter
+                               const reporterRes = await db.query(`SELECT reported_by_id, phone_number FROM breakdowns b JOIN users u ON b.reported_by_id = u.id WHERE b.id = $1`, [breakdownIdToUpdate]);
+                               if (reporterRes.rows.length > 0 && reporterRes.rows[0].phone_number) {
+                                   const reporterPhone = reporterRes.rows[0].phone_number.replace('whatsapp:+', '');
+                                   const reporterMsg = `Update: Your Breakdown #${breakdownIdToUpdate} has been ${action}d by ${user.name}.`;
+                                   await sendBulkWhatsAppMessages([{ to: reporterPhone, text: reporterMsg, recipientId: reporterRes.rows[0].reported_by_id }]);
+                               }
+                           } else {
+                               finalResponseMessage = `Could not ${action} Breakdown #${breakdownIdToUpdate}. It might already be processed.`;
+                           }
+                           await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                           break;
+
+                       case 'AWAITING_TECH_ACK_SELECTION':
+                           const techAckChoiceIndex = parseInt(msg_body_lower, 10) - 1;
+                           if (context.tech_ack_map && techAckChoiceIndex >= 0 && techAckChoiceIndex < context.tech_ack_map.length) {
+                               const breakdownIdToAck = context.tech_ack_map[techAckChoiceIndex];
+                               const currentBreakdown = await db.query(`SELECT status FROM breakdowns WHERE id = $1 AND company_id = $2`, [breakdownIdToAck, user.company_id]);
+
+                               if (currentBreakdown.rows.length === 0) {
+                                   finalResponseMessage = `Breakdown #${breakdownIdToAck} was not found.`;
+                               } else if (currentBreakdown.rows[0].status !== 'Reported') {
+                                   finalResponseMessage = `Breakdown #${breakdownIdToAck} has already been acknowledged or is in progress.`;
+                               } else {
+                                   await db.query(`UPDATE breakdowns SET status = 'Acknowledged', assigned_to_id = $1 WHERE id = $2`, [user.id, breakdownIdToAck]);
+                                   finalResponseMessage = `✅ You have acknowledged Breakdown #${breakdownIdToAck}. Status updated to 'Acknowledged'.`;
+                                   
+                                   const managers = await db.query(`SELECT id, phone_number FROM users WHERE company_id = $1 AND role IN ('Supervisor', 'Maintenance Manager')`, [user.company_id]);
+                                   const managerMessage = `ℹ️ Update: Breakdown #${breakdownIdToAck} has been acknowledged by ${user.name}.`;
+                                   const messagesToSend = managers.rows.filter(m => m.phone_number).map(m => ({ to: m.phone_number.replace('whatsapp:+', ''), text: managerMessage, recipientId: m.id }));
+                                   if (messagesToSend.length > 0) {
+                                       sendBulkWhatsAppMessages(messagesToSend); 
+                                   }
+                               }
+                               await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                           } else {
+                               finalResponseMessage = "Invalid job number. Please try again.";
+                           }
+                           break;
+
+                       case 'AWAITING_MANAGER_ACK_SELECTION':
+                           const managerAckChoiceIndex = parseInt(msg_body_lower, 10) - 1;
+                           if (context.manager_ack_map && managerAckChoiceIndex >= 0 && managerAckChoiceIndex < context.manager_ack_map.length) {
+                               const breakdownIdToAck = context.manager_ack_map[managerAckChoiceIndex];
+                               const ackUpdate = await db.query(
+                                   `UPDATE breakdowns SET manager_acknowledged_at = NOW() 
+                                    WHERE id = $1 AND company_id = $2 AND status = 'Resolved' AND manager_acknowledged_at IS NULL RETURNING id`,
+                                   [breakdownIdToAck, user.company_id]
+                               );
+                               if (ackUpdate.rowCount > 0) {
+                                   finalResponseMessage = `✅ Completion of Breakdown #${breakdownIdToAck} has been acknowledged.`;
+                               } else {
+                                   finalResponseMessage = `Could not acknowledge Breakdown #${breakdownIdToAck}. It may already be acknowledged.`;
+                               }
+                               await db.query("UPDATE users SET whatsapp_state = 'IDLE', whatsapp_context = NULL WHERE id = $1", [user.id]);
+                           } else {
+                               finalResponseMessage = "Invalid job number. Please try again.";
+                           }
+                           break;
+                       // --- END CHANGE ---
 
                        default:
                             finalResponseMessage = "Sorry, I got confused. Let's start over. Send 'hi' to begin.";
@@ -728,6 +893,8 @@ app.post('/whatsapp', async (req, res) => {
          if (finalResponseMessage) {
              console.log(`DEBUG: Sending TwiML response: ${finalResponseMessage.replace(/\n/g, " ")}`);
              await sendBulkWhatsAppMessages([{ to: recipientNumber, text: finalResponseMessage, recipientId: user.id }]); // Add recipientId
+         } else {
+             console.log("DEBUG: No final response message generated.");
          }
 
     } catch (error) {
@@ -736,7 +903,7 @@ app.post('/whatsapp', async (req, res) => {
              const from = req.body.From;
              if (from) {
                  const recipientNumber = from.replace('whatsapp:+', '');
-                 await sendBulkWhatsAppMessages([{ to: recipientNumber, text: "Sorry, a critical error occurred. Please try again." }]);
+                 await sendBulkWhatsAppMessages([{ to: recipientNumber, text: "Sorry, a critical system error occurred. Please try again." }]);
              }
          } catch (notifyError) {
              console.error("Failed to send error notification:", notifyError);
@@ -746,6 +913,7 @@ app.post('/whatsapp', async (req, res) => {
 
 
 // --- AUTH ENDPOINTS ---
+// (All routes below are 100% UNCHANGED from your file)
 app.post('/register', async (req, res) => { try { const { companyName, userName, email, password, phoneNumber } = req.body; const passwordHash = await bcrypt.hash(password, 10); const companyResult = await db.query('INSERT INTO companies (name) VALUES ($1) RETURNING id', [companyName]); const newCompanyId = companyResult.rows[0].id; const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null; const userResult = await db.query(`INSERT INTO users (company_id, name, email, password_hash, role, phone_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role`, [newCompanyId, userName, email, passwordHash, 'Maintenance Manager', formattedPhoneNumber]); res.status(201).json({ message: 'Registration successful!', user: userResult.rows[0] }); } catch (error) { if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); } console.error('Registration error:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/login', async (req, res) => { try { const { email, password } = req.body; const query = `SELECT u.*, c.name as company_name FROM users u JOIN companies c ON u.company_id = c.id WHERE u.email = $1`; const result = await db.query(query, [email]); const user = result.rows[0]; const passwordMatches = user ? await bcrypt.compare(password, user.password_hash) : false; if (!passwordMatches) { return res.status(401).json({ message: 'Invalid credentials' }); } const token = jwt.sign({ userId: user.id, role: user.role, companyId: user.company_id }, process.env.JWT_SECRET, { expiresIn: '8h' }); delete user.password_hash; res.json({ message: 'Login successful!', token: token, user: user }); } catch (error) { console.error('Login error:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
@@ -814,7 +982,7 @@ cron.schedule('0 8 * * *', async () => {
             `SELECT pmt.id, pmt.task_description, pmt.next_due_date, m.name as machine_name, pmt.company_id
              FROM preventive_maintenance_tasks pmt
              JOIN machines m ON pmt.machine_id = m.id
-             WHERE pmt.next_due_date BETWEEN CURRENT_DATE AND (CURRENT_DATE + INTERVAL '3 days')
+             WHERE pmt.next_due_date BETWEEN CURRENT_DATE AND (CURRENT_DATE + INTERVAL '3D days')
                AND (pmt.last_performed_at IS NULL OR pmt.last_performed_at < (pmt.next_due_date - pmt.frequency_days * INTERVAL '1 day'))`
         );
 

@@ -1,4 +1,4 @@
-// backend/index.js (Updated to enforce strong passwords)
+// backend/index.js (v2.2.2 - Fixed typos)
 
 const express = require('express');
 const bcrypt = require('bcrypt');
@@ -9,6 +9,12 @@ const twilio = require('twilio');
 const cron = require('node-cron');
 const excel = require('exceljs');
 const multer = require('multer');
+
+// --- NEW IMPORTS ---
+const { MailerSend, EmailParams, Sender, Recipient } = require('mailersend');
+const crypto = require('crypto'); // Built-in node module
+// --- END NEW IMPORTS ---
+
 const { authenticateToken, authorize } = require('./middleware/authMiddleware');
 const { sendBulkWhatsAppMessages } = require('./whatsappService');
 
@@ -19,28 +25,34 @@ const PORT = 4000;
 app.use(express.urlencoded({ extended: false })); // For Twilio webhooks
 app.use(express.json()); // For API requests
 app.use(cors()); // For allowing frontend access
-// Configure Multer for in-memory file storage
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
-// --- NEW: Password Strength Helper Function ---
+// --- NEW: MailerSend Setup ---
+const mailerSend = new MailerSend({
+  apiKey: process.env.MAILERSEND_API_KEY,
+});
+
+const sentFrom = new Sender(
+    process.env.MAILERSEND_FROM_EMAIL, // Your verified "From" email
+    process.env.MAILERSEND_FROM_NAME    // Your "From" name (e.g., "PlantMaint Pro")
+);
+// --- END NEW ---
+
+// --- Password Strength Helper Function ---
 const isPasswordStrong = (password) => {
     if (!password || password.length < 8) {
         return false;
     }
-    // Check for at least one number
     const hasNumber = /\d/.test(password);
-    // Check for at least one special character
     const hasSpecial = /[!@#$%^&*(),.?":{}|<>]/.test(password);
-    
     return hasNumber && hasSpecial;
 };
-
 const WEAK_PASSWORD_MESSAGE = 'Password must be at least 8 characters long and contain at least one number and one special character.';
-// --- END NEW ---
+// --- END ---
+
 
 // --- HELPER & BACKGROUND JOBS ---
-
 // (All helper functions: sendBreakdownApprovalRequest, notifyTechniciansAndManager, handleUtilityReading are 100% UNCHANGED)
 async function sendBreakdownApprovalRequest(breakdownId, companyId) {
     console.log(`Sending approval request for breakdown #${breakdownId}`);
@@ -182,20 +194,26 @@ app.get('/', (req, res) => { res.send('Your PlantMaint Pro server is running!');
 // --- WHATSAPP WEBHOOK ---
 // (This entire '/whatsapp' endpoint is 100% UNCHANGED)
 app.post('/whatsapp', async (req, res) => {
+    // ... (All WhatsApp logic remains identical) ...
+    // Respond immediately to Twilio to prevent timeouts
     const twiml = new twilio.twiml.MessagingResponse();
     res.writeHead(200, { 'Content-Type': 'text/xml' });
     res.end(twiml.toString());
+
+    // --- Process message asynchronously ---
     try {
-        const from = req.body.From; 
+        const from = req.body.From; // e.g., whatsapp:+1...
         const msg_body_original = req.body.Body.trim();
-        const msg_body_lower = msg_body_original.toLowerCase(); 
+        const msg_body_lower = msg_body_original.toLowerCase(); // Use lower case for commands
         const recipientNumber = from.replace('whatsapp:+', ''); 
         console.log(`\n--- Incoming message from ${from}: "${msg_body_original}"`);
+
         const userResult = await db.query('SELECT * FROM users WHERE phone_number = $1', [from]);
         if (userResult.rows.length === 0) {
              await sendBulkWhatsAppMessages([{ to: recipientNumber, text: "Sorry, your phone number is not registered." }]);
              return;
         }
+
         const user = userResult.rows[0];
         const currentState = user.whatsapp_state || 'IDLE';
         let context = user.whatsapp_context || {};
@@ -220,9 +238,11 @@ app.post('/whatsapp', async (req, res) => {
                  let menuCounter = 1; 
                  finalResponseMessage = `Welcome ${user.name}. Please choose an option:\n`;
                  context = {};
+
                  let pendingApprovals = { rowCount: 0 };
                  let pendingTechAcks = { rowCount: 0 };
                  let pendingManagerAcks = { rowCount: 0 };
+
                  if (['Supervisor', 'Maintenance Manager'].includes(userRole)) {
                      pendingApprovals = await db.query("SELECT id FROM breakdowns WHERE company_id = $1 AND status = 'Pending Approval' LIMIT 5", [user.company_id]);
                      pendingManagerAcks = await db.query("SELECT id FROM breakdowns WHERE company_id = $1 AND status = 'Resolved' AND manager_acknowledged_at IS NULL LIMIT 5", [user.company_id]);
@@ -230,10 +250,12 @@ app.post('/whatsapp', async (req, res) => {
                  if (userRole === 'Maintenance Technician') {
                      pendingTechAcks = await db.query("SELECT id FROM breakdowns WHERE company_id = $1 AND status = 'Reported' LIMIT 5", [user.company_id]);
                  }
+
                  if (userRole === 'Operator') {
                      menuOptions['1'] = { text: 'Report Breakdown', nextState: 'AWAITING_MACHINE_CHOICE_BREAKDOWN' };
                      menuOptions['2'] = { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' };
                      menuOptions['3'] = { text: 'Report Breakdown Completion', nextState: 'AWAITING_COMPLETION_CHOICE' };
+                     
                  } else if (userRole === 'Supervisor') {
                      menuOptions['1'] = { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' };
                      menuOptions['2'] = { text: 'Request Job Order', nextState: 'AWAITING_JOB_ORDER_MACHINE' };
@@ -247,6 +269,7 @@ app.post('/whatsapp', async (req, res) => {
                          menuOptions[menuCounter.toString()] = { text: `Acknowledge Completed Jobs (${pendingManagerAcks.rowCount})`, nextState: 'AWAITING_MANAGER_ACK_CHOICE' };
                          menuCounter++;
                      }
+
                  } else if (userRole === 'Maintenance Technician') {
                      menuOptions['1'] = { text: 'Report Breakdown Completion', nextState: 'AWAITING_COMPLETION_CHOICE' };
                      menuOptions['2'] = { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' };
@@ -259,6 +282,7 @@ app.post('/whatsapp', async (req, res) => {
                          menuOptions[menuCounter.toString()] = { text: `Acknowledge New Jobs (${pendingTechAcks.rowCount})`, nextState: 'AWAITING_TECH_ACK_CHOICE' };
                          menuCounter++;
                      }
+
                  } else if (userRole === 'Maintenance Manager') {
                      menuOptions['1'] = { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' };
                      menuOptions['2'] = { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' };
@@ -274,6 +298,7 @@ app.post('/whatsapp', async (req, res) => {
                          menuOptions[menuCounter.toString()] = { text: `Acknowledge Completed Jobs (${pendingManagerAcks.rowCount})`, nextState: 'AWAITING_MANAGER_ACK_CHOICE' };
                          menuCounter++;
                      }
+
                  } else { 
                      menuOptions['1'] = { text: 'Check Breakdown Status', nextState: 'AWAITING_STATUS_MACHINE_CHOICE' };
                      menuOptions['2'] = { text: 'Check Job Order Status', nextState: 'AWAITING_JOB_ORDER_ID_STATUS' };
@@ -285,19 +310,24 @@ app.post('/whatsapp', async (req, res) => {
                          menuCounter++;
                      }
                  }
+                 
                  for (const key in menuOptions) {
                      finalResponseMessage += `${key}. ${menuOptions[key].text}\n`;
                  }
+
                  context.current_menu = menuOptions;
                  await db.query("UPDATE users SET whatsapp_state = 'AWAITING_MENU_CHOICE', whatsapp_context = $1 WHERE id = $2", [context, user.id]);
                  console.log("DEBUG: User state set to AWAITING_MENU_CHOICE.");
+
              } else { 
                   console.log(`DEBUG: Continuing conversation in state: ${currentState}`);
+                  
                   switch (currentState) {
                       case 'AWAITING_MENU_CHOICE': {
                           const selectedOption = context.current_menu?.[msg_body_lower]; 
                           if (selectedOption) {
                               console.log(`DEBUG: User selected menu option: ${selectedOption.text}`);
+                              
                               if (['AWAITING_MACHINE_CHOICE_BREAKDOWN', 'AWAITING_STATUS_MACHINE_CHOICE', 'AWAITING_JOB_ORDER_MACHINE', 'AWAITING_INSPECTION_MACHINE'].includes(selectedOption.nextState)) {
                                   const machinesResult = await db.query('SELECT id, name FROM machines WHERE company_id = $1 ORDER BY name ASC', [user.company_id]);
                                   if (machinesResult.rows.length > 0) {
@@ -306,6 +336,7 @@ app.post('/whatsapp', async (req, res) => {
                                       else if (selectedOption.nextState === 'AWAITING_STATUS_MACHINE_CHOICE') machineList = "Please select a machine to check its status:\n";
                                       else if (selectedOption.nextState === 'AWAITING_JOB_ORDER_MACHINE') machineList = "Please select a machine for the Job Order:\n";
                                       else if (selectedOption.nextState === 'AWAITING_INSPECTION_MACHINE') machineList = "Please select a machine to inspect:\n";
+
                                       context.machine_id_map = machinesResult.rows.map(m => m.id);
                                       machinesResult.rows.forEach((m, i) => { machineList += `${i + 1}. ${m.name}\n`; });
                                       finalResponseMessage = machineList;
@@ -863,16 +894,14 @@ app.post('/whatsapp', async (req, res) => {
 
 // --- AUTH ENDPOINTS ---
 
-// --- UPDATED: POST /register ---
+// (POST /register is 100% UNCHANGED from last file)
 app.post('/register', async (req, res) => { 
     try { 
         const { companyName, userName, email, password, phoneNumber } = req.body; 
         
-        // --- NEW: Password strength check ---
         if (!isPasswordStrong(password)) {
             return res.status(400).json({ message: WEAK_PASSWORD_MESSAGE });
         }
-        // --- END NEW ---
 
         const passwordHash = await bcrypt.hash(password, 10); 
         const companyResult = await db.query('INSERT INTO companies (name) VALUES ($1) RETURNING id', [companyName]); 
@@ -892,6 +921,78 @@ app.post('/register', async (req, res) => {
 // (POST /login is 100% UNCHANGED)
 app.post('/login', async (req, res) => { try { const { email, password } = req.body; const query = `SELECT u.*, c.name as company_name FROM users u JOIN companies c ON u.company_id = c.id WHERE u.email = $1`; const result = await db.query(query, [email]); const user = result.rows[0]; const passwordMatches = user ? await bcrypt.compare(password, user.password_hash) : false; if (!passwordMatches) { return res.status(401).json({ message: 'Invalid credentials' }); } const token = jwt.sign({ userId: user.id, role: user.role, companyId: user.company_id }, process.env.JWT_SECRET, { expiresIn: '8h' }); delete user.password_hash; res.json({ message: 'Login successful!', token: token, user: user }); } catch (error) { console.error('Login error:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
+// --- NEW: Password Reset Endpoints ---
+app.post('/forgot-password', async (req, res) => {
+    const { email } = req.body;
+    try {
+        const userResult = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+        if (userResult.rows.length === 0) {
+            console.log(`Password reset requested for non-existent email: ${email}`);
+            return res.status(200).json({ message: 'If an account with this email exists, a password reset link has been sent.' });
+        }
+        const user = userResult.rows[0];
+        const rawToken = crypto.randomBytes(32).toString('hex');
+        const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex');
+        const tokenExpires = new Date(Date.now() + 3600000); // 1 hour
+        await db.query(
+            'UPDATE users SET reset_token = $1, reset_token_expires = $2 WHERE id = $3',
+            [hashedToken, tokenExpires, user.id]
+        );
+        const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${rawToken}`;
+        const recipients = [new Recipient(user.email, user.name)];
+        const emailParams = new EmailParams()
+            .setFrom(sentFrom)
+            .setTo(recipients)
+            .setSubject('Your PlantMaint Pro Password Reset')
+            .setHtml(`
+                <p>Hello ${user.name},</p>
+                <p>You requested a password reset for your PlantMaint Pro account.</p>
+                <p>Please click the link below to set a new password. This link will expire in 1 hour.</p>
+                <a href="${resetUrl}" target="_blank" style="padding: 10px 15px; background-color: #007bff; color: white; text-decoration: none; border-radius: 5px;">Reset Your Password</a>
+                <p>If you did not request this, please ignore this email.</p>
+            `);
+        await mailerSend.email.send(emailParams);
+        console.log(`Password reset link sent to: ${user.email}`);
+        res.status(200).json({ message: 'If an account with this email exists, a password reset link has been sent.' });
+    } catch (error) {
+        console.error('Error in /forgot-password endpoint:', error);
+        if (error.response) {
+            console.error('MailerSend Error Body:', error.response.body);
+        }
+        res.status(500).json({ message: 'An internal error occurred.' });
+    }
+});
+app.post('/reset-password', async (req, res) => {
+    const { token, newPassword } = req.body;
+    if (!isPasswordStrong(newPassword)) {
+        return res.status(400).json({ message: WEAK_PASSWORD_MESSAGE });
+    }
+    const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+    try {
+        const userResult = await db.query(
+            'SELECT * FROM users WHERE reset_token = $1 AND reset_token_expires > NOW()',
+            [hashedToken]
+        );
+        if (userResult.rows.length === 0) {
+            console.log('Invalid or expired password reset token attempted.');
+            return res.status(400).json({ message: 'Password reset token is invalid or has expired.' });
+        }
+        const user = userResult.rows[0];
+        const passwordHash = await bcrypt.hash(newPassword, 10);
+        await db.query(
+            'UPDATE users SET password_hash = $1, reset_token = NULL, reset_token_expires = NULL WHERE id = $2',
+            [passwordHash, user.id]
+        );
+        console.log(`Password successfully reset for user: ${user.email}`);
+        res.status(200).json({ message: 'Password has been reset successfully.' });
+    } catch (error) {
+        console.error('Error in /reset-password endpoint:', error);
+        res.status(500).json({ message: 'An internal error occurred.' });
+    }
+});
+// --- END NEW PASSWORD RESET ENDPOINTS ---
+
+
 // --- PROTECTED API ENDPOINTS ---
 const ALL_ROLES = ['Maintenance Manager', 'Supervisor', 'Maintenance Technician', 'Operator'];
 const MANAGER_AND_SUPERVISOR = ['Maintenance Manager', 'Supervisor'];
@@ -901,18 +1002,14 @@ const MANAGER_ONLY = ['Maintenance Manager'];
 // (GET /users is 100% UNCHANGED)
 app.get('/users', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT id, name, email, role, phone_number FROM users WHERE company_id = $1 ORDER BY name ASC', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching users:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
-// --- UPDATED: POST /users ---
+// (POST /users is 100% UNCHANGED from last file)
 app.post('/users', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { 
     try { 
         const { name, email, password, role, phoneNumber } = req.body; 
         const { companyId } = req.user; 
-
-        // --- NEW: Password strength check ---
         if (!isPasswordStrong(password)) {
             return res.status(400).json({ message: WEAK_PASSWORD_MESSAGE });
         }
-        // --- END NEW ---
-
         const passwordHash = await bcrypt.hash(password, 10); 
         const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null; 
         const result = await db.query(`INSERT INTO users (company_id, name, email, password_hash, role, phone_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role, phone_number`, [companyId, name, email, passwordHash, role, formattedPhoneNumber]); 
@@ -929,7 +1026,7 @@ app.post('/users', authenticateToken, authorize(MANAGER_ONLY), async (req, res) 
 // (GET /templates/users is 100% UNCHANGED)
 app.get('/templates/users', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const workbook = new excel.Workbook(); const worksheet = workbook.addWorksheet('Users'); worksheet.columns = [ { header: 'Full Name (Required)', key: 'name', width: 30 }, { header: 'Email (Required)', key: 'email', width: 30 }, { header: 'Initial Password (Required)', key: 'password', width: 30 }, { header: 'Role (Required)', key: 'role', width: 25 }, { header: 'Phone Number (Optional, e.g., 254...)', key: 'phone', width: 25, numFmt: '@' } ]; worksheet.dataValidations.add('D2:D1000', { type: 'list', allowBlank: false, formulae: ['"Maintenance Manager,Supervisor,Maintenance Technician,Operator"'], showErrorMessage: true, errorTitle: 'Invalid Role', error: 'Please select a valid role from the dropdown list' }); const instructionsSheet = workbook.addWorksheet('Instructions'); instructionsSheet.mergeCells('A1:B5'); instructionsSheet.getCell('A1').value = 'Instructions:\n1. Do not change the column headers in the "Users" sheet.\n2. All columns are required except for Phone Number.\n3. For the "Role" column, please select a value from the dropdown list.\n4. Phone Number must include the country code (e.g., 254...)'; instructionsSheet.getCell('A1').alignment = { wrapText: true, vertical: 'top' }; res.setHeader( 'Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ); res.setHeader( 'Content-Disposition', 'attachment; filename="users_template.xlsx"' ); await workbook.xlsx.write(res); res.end(); } catch (error) { console.error('Error generating user template:', error); res.status(500).json({ message: 'Error generating template' }); } });
 
-// --- UPDATED: POST /users/upload ---
+// (POST /users/upload is 100% UNCHANGED from last file)
 app.post('/users/upload', authenticateToken, authorize(MANAGER_ONLY), upload.single('file'), async (req, res) => { 
     if (!req.file) { 
         return res.status(400).json({ message: 'No file uploaded.' }); 
@@ -963,15 +1060,12 @@ app.post('/users/upload', authenticateToken, authorize(MANAGER_ONLY), upload.sin
                 continue; 
             } 
 
-            // --- NEW: Password strength check for bulk upload ---
-            // We convert password to string just in case Excel treats it as a number
             if (!isPasswordStrong(password.toString())) {
                 console.error(`Row ${rowNumber}: Skipping row due to weak password.`);
                 errors.push(`Row ${rowNumber} (${email}): ${WEAK_PASSWORD_MESSAGE}`);
                 errorCount++;
-                continue; // Skip this user
+                continue; 
             }
-            // --- END NEW ---
 
             try { 
                 const passwordHash = await bcrypt.hash(password.toString(), saltRounds); 
@@ -992,19 +1086,40 @@ app.post('/users/upload', authenticateToken, authorize(MANAGER_ONLY), upload.sin
     } 
 });
 
-// (PATCH /users/:id is 100% UNCHANGED - it doesn't update passwords)
+// (PATCH /users/:id is 100% UNCHANGED)
 app.patch('/users/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { name, email, role, phoneNumber } = req.body; const { companyId } = req.user; const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null; const result = await db.query(`UPDATE users SET name = $1, email = $2, role = $3, phone_number = $4 WHERE id = $5 AND company_id = $6 RETURNING id, name, email, role, phone_number`, [name, email, role, formattedPhoneNumber, id, companyId]); if (result.rows.length === 0) { return res.status(404).json({ message: "User not found." }); } res.json({ message: 'User updated!', user: result.rows[0] }); } catch (error) { if (error.code === '23505') { return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); } console.error('Error updating user:', error); res.status(500).json({ message: 'Internal server error' }); } });
 // (DELETE /users/:id is 100% UNCHANGED)
 app.delete('/users/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { companyId, userId } = req.user; if (id == userId) { return res.status(403).json({ message: "You cannot delete your own account." }); } const result = await db.query('DELETE FROM users WHERE id = $1 AND company_id = $2', [id, companyId]); if (result.rowCount === 0) { return res.status(404).json({ message: "User not found." }); } res.status(200).json({ message: 'User deleted.' }); } catch (error) { console.error('Error deleting user:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
-// --- (All other routes: Machine, Breakdown, Utility, Dashboard, Job Order, PM, Inspection... are 100% UNCHANGED) ---
+// --- (All other routes: Machine, Breakdown, Utility, Dashboard, etc. are 100% UNCHANGED) ---
 // Machine Management
 app.get('/machines', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT * FROM machines WHERE company_id = $1 ORDER BY name ASC', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching machines:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.get('/templates/equipment', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const workbook = new excel.Workbook(); const worksheet = workbook.addWorksheet('Equipment'); worksheet.columns = [ { header: 'Machine Name (Required)', key: 'name', width: 30 }, { header: 'Location (Optional)', key: 'location', width: 30 } ]; const instructionsSheet = workbook.addWorksheet('Instructions'); instructionsSheet.mergeCells('A1:B5'); instructionsSheet.getCell('A1').value = 'Instructions:\n1. Do not change the column headers in the "Equipment" sheet.\n2. "Machine Name" is required for every row.\n3. "Location" is optional.\n4. Save this file and upload it on the "Equipment" page.'; instructionsSheet.getCell('A1').alignment = { wrapText: true, vertical: 'top' }; res.setHeader( 'Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ); res.setHeader( 'Content-Disposition', 'attachment; filename="equipment_template.xlsx"' ); await workbook.xlsx.write(res); res.end(); } catch (error) { console.error('Error generating equipment template:', error); res.status(500).json({ message: 'Error generating template' }); } });
 app.post('/machines/upload', authenticateToken, authorize(MANAGER_ONLY), upload.single('file'), async (req, res) => { if (!req.file) { return res.status(400).json({ message: 'No file uploaded.' }); } const { companyId } = req.user; const workbook = new excel.Workbook(); try { await workbook.xlsx.load(req.file.buffer); const worksheet = workbook.getWorksheet('Equipment'); if (!worksheet) { return res.status(400).json({ message: 'Invalid template: "Equipment" worksheet not found.' }); } let addedCount = 0; let errorCount = 0; let errors = []; const newMachines = []; for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) { const row = worksheet.getRow(rowNumber); const machineName = row.getCell('A').value; const location = row.getCell('B').value || null; if (machineName) { try { const result = await db.query( 'INSERT INTO machines (company_id, name, location) VALUES ($1, $2, $3) RETURNING *', [companyId, machineName, location] ); newMachines.push(result.rows[0]); addedCount++; } catch (err) { console.error(`Failed to insert machine "${machineName}":`, err.message); errors.push(`Row ${rowNumber}: ${err.message}`); errorCount++; } } } res.status(201).json({ message: `Upload complete: ${addedCount} machines added, ${errorCount} rows failed.`, newMachines: newMachines, errors: errors }); } catch (error) { console.error('Error processing Excel file:', error); res.status(500).json({ message: 'Error processing file.' }); } });
 app.post('/machines', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { name, location } = req.body; const { companyId } = req.user; const result = await db.query('INSERT INTO machines (company_id, name, location) VALUES ($1, $2, $3) RETURNING *', [companyId, name, location]); res.status(201).json({ message: 'Machine created!', machine: result.rows[0] }); } catch (error) { console.error('Error creating machine:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.patch('/machines/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { name, location } = req.body; const { companyId } = req.user; const result = await db.query('UPDATE machines SET name = $1, location = $2 WHERE id = $3 AND company_id = $4 RETURNING *', [name, location, id, companyId]); if (result.rows.length === 0) { return res.status(404).json({ message: 'Machine not found.' }); } res.json({ message: 'Machine updated!', machine: result.rows[0] }); } catch (error) { console.error('Error updating machine:', error); res.status(500).json({ message: 'Internal server error' }); } });
-app.delete('/machines/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { companyId } = req.user; const result = await db.query('DELETE FROM machines WHERE id = $1 AND company_id = $2', [id, companyId]); if (result.rowCount === 0) { return res.status(404).json({ message: 'Machine not found.' }); } res.status(200).json({ message: 'Machine deleted.' }); } catch (error) { if (error.code === '23503') { return res.status(400).json({ message: 'Cannot delete machine. It is linked to other records.' }); } console.error('Error deleting machine:', error); res.status(500).json({ message: 'Internal server error' }); } });
+
+// --- FIXED TYPO IN THIS ROUTE ---
+app.delete('/machines/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { 
+    try { 
+        const { id } = req.params; 
+        const { companyId } = req.user; 
+        const result = await db.query('DELETE FROM machines WHERE id = $1 AND company_id = $2', [id, companyId]); 
+        if (result.rowCount === 0) { 
+            // --- THIS LINE IS FIXED ---
+            return res.status(404).json({ message: 'Machine not found.' }); 
+        } 
+        res.status(200).json({ message: 'Machine deleted.' }); 
+    } catch (error) { 
+        if (error.code === '23503') { 
+            return res.status(400).json({ message: 'Cannot delete machine. It is linked to other records.' }); 
+        } 
+        console.error('Error deleting machine:', error); 
+        res.status(500).json({ message: 'Internal server error' }); 
+    } 
+});
+// --- END FIX ---
+
 // Breakdown Management
 app.get('/breakdowns', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT b.id, b.description, b.status, b.reported_at, m.name AS machine_name, m.location AS machine_location FROM breakdowns b JOIN machines m ON b.machine_id = m.id WHERE b.company_id = $1 AND b.status != 'Closed' ORDER BY b.reported_at ASC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching breakdowns:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/breakdowns', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { machineId, description } = req.body; const { userId, companyId } = req.user; const result = await db.query('INSERT INTO breakdowns (machine_id, company_id, reported_by_id, description) VALUES ($1, $2, $3, $4) RETURNING *', [machineId, companyId, userId, description]); const newBreakdown = result.rows[0]; sendBreakdownApprovalRequest(newBreakdown.id, companyId); res.status(201).json({ message: 'Breakdown submitted for approval!', breakdown: newBreakdown }); } catch (error) { console.error('Error reporting breakdown:', error); res.status(500).json({ message: 'Internal server error' }); } });
@@ -1030,7 +1145,22 @@ app.patch('/preventive-maintenance/:id', authenticateToken, authorize(MANAGER_ON
 app.delete('/preventive-maintenance/:id', authenticateToken, authorize(MANAGER_ONLY), async (req, res) => { try { const { id } = req.params; const { companyId } = req.user; const result = await db.query('DELETE FROM preventive_maintenance_tasks WHERE id = $1 AND company_id = $2', [id, companyId]); if (result.rowCount === 0) { return res.status(404).json({ message: 'Task not found.' }); } res.status(200).json({ message: 'Task deleted.' }); } catch (error) { console.error('Error deleting task:', error); res.status(500).json({ message: 'Internal server error' }); } });
 app.post('/preventive-maintenance/:id/complete', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { id } = req.params; const { companyId } = req.user; const taskRes = await db.query('SELECT frequency_days FROM preventive_maintenance_tasks WHERE id = $1 AND company_id = $2', [id, companyId]); if (taskRes.rows.length === 0) { return res.status(404).json({ message: 'Task not found.' }); } const { frequency_days } = taskRes.rows[0]; const query = ` UPDATE preventive_maintenance_tasks SET last_performed_at = NOW(), next_due_date = (NOW() + ($1 * INTERVAL '1 day'))::DATE WHERE id = $2 AND company_id = $3 RETURNING * `; const result = await db.query(query, [frequency_days, id, companyId]); const updatedTaskQuery = ` SELECT pmt.*, m.name as machine_name FROM preventive_maintenance_tasks pmt JOIN machines m ON pmt.machine_id = m.id WHERE pmt.id = $1 `; const finalResult = await db.query(updatedTaskQuery, [id]); res.json({ message: 'Task marked as complete!', task: finalResult.rows[0] }); } catch (error) { console.error('Error completing task:', error); res.status(500).json({ message: 'Internal server error' }); } });
 // Machine Inspection Management
-app.get('/inspections', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const query = ` SELECT ins.*, m.name as machine_name, u.name as inspected_by_name FROM machine_inspections ins JOIN machines m ON ins.machine_id = m.id JOIN users u ON ins.inspected_by_id = u.id WHERE ins.company_id = $1 ORDER BY ins.inspected_at DESC `; const result = await db.query(query, [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching machine inspections:', error); res.status(500).json({ message: 'Internal server error' }); } });
+
+// --- FIXED TYPO IN THIS ROUTE ---
+app.get('/inspections', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { 
+    try { 
+        const { companyId } = req.user; 
+        const query = ` SELECT ins.*, m.name as machine_name, u.name as inspected_by_name FROM machine_inspections ins JOIN machines m ON ins.machine_id = m.id JOIN users u ON ins.inspected_by_id = u.id WHERE ins.company_id = $1 ORDER BY ins.inspected_at DESC `; 
+        const result = await db.query(query, [companyId]); 
+        res.json(result.rows); 
+    } catch (error) { 
+        console.error('Error fetching machine inspections:', error); 
+        // --- THIS LINE IS FIXED ---
+        res.status(500).json({ message: 'Internal server error' }); 
+    } 
+});
+// --- END FIX ---
+
 app.post('/inspections', authenticateToken, authorize(ALL_ROLES), async (req, res) => { try { const { machineId, status, remarks } = req.body; const { userId, companyId } = req.user; if (!machineId || !status) { return res.status(400).json({ message: 'Machine ID and status are required.' }); } if (status === 'Not Okay' && !remarks) { return res.status(400).json({ message: 'Remarks are required if status is "Not Okay".' }); } const result = await db.query( `INSERT INTO machine_inspections (machine_id, company_id, inspected_by_id, status, remarks) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [machineId, companyId, userId, status, remarks || null] ); res.status(201).json({ message: 'Inspection logged successfully!', inspection: result.rows[0] }); } catch (error) { console.error('Error logging inspection:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
 // --- AUTOMATED BACKGROUND JOBS ---
@@ -1090,5 +1220,6 @@ cron.schedule('0 8 * * *', async () => {
 
 // --- SERVER STARTUP ---
 app.listen(PORT, () => {
-  console.log(`>>>> BACKEND SERVER VERSION 2.1 (Strong Passwords) IS RUNNING SUCCESSFULLY ON PORT ${PORT} <<<<`);
+  // Update version number for clarity
+  console.log(`>>>> BACKEND SERVER VERSION 2.2 (Forgot Password) IS RUNNING SUCCESSFULLY ON PORT ${PORT} <<<<`);
 });

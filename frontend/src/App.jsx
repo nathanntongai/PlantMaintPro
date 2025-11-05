@@ -11,6 +11,8 @@ import MachineManagement from './pages/MachineManagement';
 import JobOrderManagement from './pages/JobOrderManagement';
 import MachineInspections from './pages/MachineInspections';
 import UtilityManagement from './pages/UtilityManagement';
+import ForgotPassword from './pages/Forgot';
+import ResetPassword from './pages/Reset';  
 
 function ProtectedRoutes() {
   const { token } = useAuth();
@@ -24,6 +26,8 @@ function App() {
     <Routes>
       <Route path="/login" element={!token ? <Login /> : <Navigate to="/" />} />
       <Route path="/register" element={!token ? <Register /> : <Navigate to="/" />} />
+      <Route path="/forgot-password" element={!token ? <ForgotPassword /> : <Navigate to="/" />} />
+      <Route path="/reset-password/:token" element={!token ? <ResetPassword /> : <Navigate to="/" />} />
       
       <Route element={<ProtectedRoutes />}>
         <Route path="/dashboard" element={<Dashboard />} />

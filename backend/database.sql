@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS users (
     whatsapp_state VARCHAR(50) DEFAULT 'IDLE',
     whatsapp_context JSONB,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    reset_token TEXT,
+    reset_token_expires TIMESTAMP,
 );
 
 -- Table for Machines

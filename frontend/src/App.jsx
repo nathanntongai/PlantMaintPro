@@ -14,10 +14,25 @@ import UtilityManagement from './pages/UtilityManagement';
 import ForgotPassword from './pages/Forgot';
 import ResetPassword from './pages/Reset';  
 import AdminCompanyManagement from './pages/AdminCompanyManagement';
+import AdminUserManagement from './pages/AdminUserManagement';
+import AdminDashboard from './pages/AdminDashboard';
+import AdminReports from './pages/AdminReports';
 
 function ProtectedRoutes() {
-  const { token } = useAuth();
-  return token ? <MainLayout><Outlet /></MainLayout> : <Navigate to="/login" />;
+  const { token, userRole } = useAuth(); // Get token and role
+
+  if (!token) {
+    // If no token, redirect to login
+    return <Navigate to="/login" />;
+  }
+
+  // If there IS a token, show the layout
+  // We will handle the default redirect inside the layout
+  return (
+    <MainLayout>
+      <Outlet />
+    </MainLayout>
+  );
 }
 
 function App() {
@@ -40,6 +55,9 @@ function App() {
         <Route path="/inspections" element={<MachineInspections />} />
         <Route path="/utilities" element={<UtilityManagement />} />
         <Route path="/admin/companies" element={<AdminCompanyManagement />} /><Route path="/admin/companies" element={<AdminCompanyManagement />} />
+        <Route path="/admin/users" element={<AdminUserManagement />} />
+        <Route path="/admin/dashboard" element={<AdminDashboard />} />
+        <Route path="/admin/reports" element={<AdminReports />} />
       </Route>
     </Routes>
   );

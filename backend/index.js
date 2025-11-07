@@ -1078,6 +1078,258 @@ app.get('/admin/companies', authenticateToken, authorize(ADMIN_ONLY), async (req
   }
 });
 // --- END NEW Admin-Only ---
+
+// --- NEW: Admin-only route to update a company's status ---
+app.patch('/admin/companies/:id/status', authenticateToken, authorize(ADMIN_ONLY), async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+
+  // A quick check to make sure the status is valid
+  const validStatuses = ['active', 'inactive', 'suspended'];
+  if (!status || !validStatuses.includes(status)) {
+    return res.status(400).json({ message: 'Invalid status provided.' });
+  }
+
+  try {
+    const result = await db.query(
+      'UPDATE companies SET status = $1 WHERE id = $2 RETURNING id, name, status, created_at',
+      [status, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Company not found.' });
+    }
+
+    // Send back the updated company data
+    res.json({ message: 'Company status updated!', company: result.rows[0] });
+  } catch (error) {
+    console.error('Error updating company status for admin:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+// --- END NEW Admin-only route ---
+
+// --- NEW: Admin-only route to CREATE a new company ---
+app.post('/admin/companies', authenticateToken, authorize(ADMIN_ONLY), async (req, res) => {
+  // We get all the data from the admin's form
+  const { companyName, userName, email, password, phoneNumber } = req.body; // <-- ADDED phoneNumber
+
+  // 1. Check for password strength
+  if (!isPasswordStrong(password)) {
+    return res.status(400).json({ message: WEAK_PASSWORD_MESSAGE });
+  }
+
+  try {
+    // 2. Hash the new user's password
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // 3. Create the company
+    const companyResult = await db.query(
+      'INSERT INTO companies (name) VALUES ($1) RETURNING *',
+      [companyName]
+    );
+    const newCompany = companyResult.rows[0];
+
+    // 4. Format the phone number (just like the /register route)
+    const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null; 
+
+    // 5. Create the new manager user for that company
+    const userResult = await db.query(
+      `INSERT INTO users (company_id, name, email, password_hash, role, phone_number) 
+       VALUES ($1, $2, $3, $4, $5, $6) 
+       RETURNING id, name, email, role`,
+      [newCompany.id, userName, email, passwordHash, 'Maintenance Manager', formattedPhoneNumber] // <-- Use new variable
+    );
+
+    // 6. Send back the new company data to update the admin's table
+    res.status(201).json({ message: 'Company created successfully!', company: newCompany });
+
+  } catch (error) {
+    // Check for duplicate email or phone number
+    if (error.code === '23505') { 
+      // Check which constraint failed (this is robust)
+      if (error.constraint && error.constraint.includes('users_email_key')) {
+        return res.status(400).json({ message: 'Error: Email already in use.' });
+      }
+      if (error.constraint && error.constraint.includes('users_phone_number_key')) {
+        return res.status(400).json({ message: 'Error: Phone number already in use.' });
+      }
+      // Fallback for other unique errors
+      return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); 
+    } 
+    console.error('Error creating company for admin:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+// --- END NEW Admin-only route ---
+
+// --- NEW: Admin-only route to GET ALL users from ALL companies ---
+app.get('/admin/users', authenticateToken, authorize(ADMIN_ONLY), async (req, res) => {
+  try {
+    // We use a LEFT JOIN just in case any user (like the admin) has no company
+    const query = `
+      SELECT u.id, u.name, u.email, u.role, u.phone_number, c.name as company_name 
+      FROM users u
+      LEFT JOIN companies c ON u.company_id = c.id
+      ORDER BY u.id ASC
+    `;
+    const result = await db.query(query);
+    res.json(result.rows);
+
+  } catch (error) {
+    console.error('Error fetching all users for admin:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+// --- END NEW Admin-only route ---
+
+// --- NEW: Admin-only route to DELETE a company and all its data ---
+app.delete('/admin/companies/:id', authenticateToken, authorize(ADMIN_ONLY), async (req, res) => {
+  const { id } = req.params;
+  console.log(`[ADMIN] Attempting to delete company ID: ${id}`);
+
+  // We must use a transaction to delete from multiple tables safely.
+  const client = await db.pool.connect(); // Get a client from the pool
+
+  try {
+    await client.query('BEGIN'); // Start the transaction
+
+    // Delete all data that references the company, in order.
+    // We delete data that depends on users/machines first.
+
+    // 1. Get all user IDs for the company
+    const usersRes = await client.query('SELECT id FROM users WHERE company_id = $1', [id]);
+    const userIds = usersRes.rows.map(u => u.id);
+
+    if (userIds.length > 0) {
+      // Delete notification logs linked to those users
+      await client.query('DELETE FROM notification_logs WHERE recipient_id = ANY($1::int[])', [userIds]);
+      // Delete inspection logs
+      await client.query('DELETE FROM machine_inspections WHERE inspected_by_id = ANY($1::int[])', [userIds]);
+    }
+
+    // 2. Delete data with a direct company_id
+    await client.query('DELETE FROM job_orders WHERE company_id = $1', [id]);
+    await client.query('DELETE FROM preventive_maintenance_tasks WHERE company_id = $1', [id]);
+    await client.query('DELETE FROM utility_readings WHERE company_id = $1', [id]);
+    await client.query('DELETE FROM utilities WHERE company_id = $1', [id]);
+    await client.query('DELETE FROM breakdowns WHERE company_id = $1', [id]);
+    await client.query('DELETE FROM machine_inspections WHERE company_id = $1', [id]);
+    await client.query('DELETE FROM machines WHERE company_id = $1', [id]);
+
+    // 3. Now delete all users for that company
+    await client.query('DELETE FROM users WHERE company_id = $1', [id]);
+
+    // 4. Finally, delete the company itself
+    const result = await client.query('DELETE FROM companies WHERE id = $1 RETURNING *', [id]);
+
+    if (result.rowCount === 0) {
+      throw new Error('Company not found.');
+    }
+
+    await client.query('COMMIT'); // Finalize the transaction
+    console.log(`[ADMIN] Successfully deleted company ID: ${id}`);
+    res.status(200).json({ message: `Company '${result.rows[0].name}' and all associated data deleted.` });
+
+  } catch (error) {
+    await client.query('ROLLBACK'); // Undo all changes if one part fails
+    console.error(`Error deleting company ID ${id}:`, error);
+    res.status(500).json({ message: 'Internal server error while deleting company.', error: error.message });
+  } finally {
+    client.release(); // Return the client to the pool
+  }
+});
+// --- END NEW Admin-only route ---
+
+// --- NEW: Admin-only route to GET system metrics ---
+app.get('/admin/metrics', authenticateToken, authorize(ADMIN_ONLY), async (req, res) => {
+  try {
+    // 1. Get total active companies
+    const companiesRes = await db.query(
+      "SELECT COUNT(*) FROM companies WHERE status = 'active'"
+    );
+    const activeCompanies = parseInt(companiesRes.rows[0].count, 10);
+
+    // 2. Get total users
+    const usersRes = await db.query(
+      "SELECT COUNT(*) FROM users"
+    );
+    const totalUsers = parseInt(usersRes.rows[0].count, 10);
+
+    // Send back the metrics
+    res.json({
+      activeCompanies,
+      totalUsers
+      // We can add more metrics here later
+    });
+
+  } catch (error) {
+    console.error('Error fetching admin metrics:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+// --- END NEW Admin-only route ---
+
+// --- NEW: Admin-only route to download an Excel summary report ---
+app.get('/admin/reports/summary', authenticateToken, authorize(ADMIN_ONLY), async (req, res) => {
+  try {
+    const workbook = new excel.Workbook();
+    workbook.creator = 'PlantMaint Pro Admin';
+    workbook.created = new Date();
+
+    // --- Worksheet 1: Companies ---
+    const companySheet = workbook.addWorksheet('Companies');
+    companySheet.columns = [
+      { header: 'Company ID', key: 'id', width: 10 },
+      { header: 'Company Name', key: 'name', width: 30 },
+      { header: 'Status', key: 'status', width: 15 },
+      { header: 'Created At', key: 'created_at', width: 20, style: { numFmt: 'yyyy-mm-dd hh:mm:ss' } }
+    ];
+
+    const companies = await db.query('SELECT * FROM companies ORDER BY name ASC');
+    companySheet.addRows(companies.rows);
+
+    // --- Worksheet 2: Users ---
+    const userSheet = workbook.addWorksheet('Users');
+    userSheet.columns = [
+      { header: 'User ID', key: 'id', width: 10 },
+      { header: 'Full Name', key: 'name', width: 30 },
+      { header: 'Email', key: 'email', width: 35 },
+      { header: 'Role', key: 'role', width: 20 },
+      { header: 'Phone Number', key: 'phone_number', width: 20 },
+      { header: 'Company Name', key: 'company_name', width: 30 }
+    ];
+
+    const users = await db.query(`
+      SELECT u.id, u.name, u.email, u.role, u.phone_number, c.name as company_name 
+      FROM users u
+      LEFT JOIN companies c ON u.company_id = c.id
+      ORDER BY u.id ASC
+    `);
+    userSheet.addRows(users.rows);
+
+    // --- Send the file to the client ---
+    const fileName = `PlantMaintPro_Summary_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${fileName}"`
+    );
+
+    await workbook.xlsx.write(res);
+    res.end();
+
+  } catch (error) {
+    console.error('Error generating admin summary report:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+// --- END NEW Admin-only route ---
+
 app.get('/users', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT id, name, email, role, phone_number FROM users WHERE company_id = $1 ORDER BY name ASC', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching users:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
 // (POST /users is 100% UNCHANGED from last file)

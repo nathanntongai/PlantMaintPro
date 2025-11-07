@@ -70,11 +70,29 @@ const DrawerHeader = styled('div')(({ theme }) => ({
 // --- NEW: Admin-only menu component ---
 const AdminMenu = () => (
   <List>
+    <ListItemButton component={Link} to="/admin/dashboard">
+      <ListItemIcon>
+        <DashboardIcon />
+      </ListItemIcon>
+      <ListItemText primary="Dashboard" />
+    </ListItemButton>
     <ListItemButton component={Link} to="/admin/companies">
       <ListItemIcon>
         <BusinessIcon />
       </ListItemIcon>
       <ListItemText primary="Company Management" />
+    </ListItemButton>
+    <ListItemButton component={Link} to="/admin/users">
+      <ListItemIcon>
+        <PeopleIcon />
+      </ListItemIcon>
+      <ListItemText primary="User Management" />
+    </ListItemButton>
+    <ListItemButton component={Link} to="/admin/reports">
+      <ListItemIcon>
+        <AssessmentIcon />
+      </ListItemIcon>
+      <ListItemText primary="Reports" />
     </ListItemButton>
     {/* You can add more admin links here later */}
   </List>

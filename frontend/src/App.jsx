@@ -13,6 +13,7 @@ import MachineInspections from './pages/MachineInspections';
 import UtilityManagement from './pages/UtilityManagement';
 import ForgotPassword from './pages/Forgot';
 import ResetPassword from './pages/Reset';  
+import AdminCompanyManagement from './pages/AdminCompanyManagement';
 
 function ProtectedRoutes() {
   const { token } = useAuth();
@@ -38,6 +39,7 @@ function App() {
         <Route path="/job-orders" element={<JobOrderManagement />} />
         <Route path="/inspections" element={<MachineInspections />} />
         <Route path="/utilities" element={<UtilityManagement />} />
+        <Route path="/admin/companies" element={<AdminCompanyManagement />} /><Route path="/admin/companies" element={<AdminCompanyManagement />} />
       </Route>
     </Routes>
   );

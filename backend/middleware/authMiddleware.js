@@ -1,39 +1,50 @@
 // backend/middleware/authMiddleware.js
+// --- (UPDATED with Admin permissions) ---
 
 const jwt = require('jsonwebtoken');
 
-const authenticateToken = (req, res, next) => {
+// This function checks if a token exists and is valid
+// (This function is UNCHANGED)
+function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
 
   if (token == null) {
-    return res.sendStatus(401); // Unauthorized
+    return res.sendStatus(401); // No token
   }
 
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
     if (err) {
-      return res.sendStatus(403); // Forbidden
+      return res.sendStatus(403); // Invalid token
     }
-    req.user = user;
+    req.user = user; // user = { userId, role, companyId }
     next();
   });
-};
+}
 
-// NEW: Middleware for checking user roles
-const authorize = (allowedRoles) => {
+// This function checks if the user's role is allowed
+// --- THIS FUNCTION IS NOW UPDATED ---
+function authorize(allowedRoles) {
   return (req, res, next) => {
-    // We get the user object from the previous authenticateToken middleware
-    const { role } = req.user;
+    const userRole = req.user.role;
 
-    // Check if the user's role is in the list of allowed roles
-    if (allowedRoles.includes(role)) {
-      next(); // Role is allowed, proceed to the endpoint
-    } else {
-      // Role is not allowed, send a Forbidden error
-      res.status(403).json({ message: 'Forbidden: You do not have permission to perform this action.' });
+    // --- NEW ADMIN RULE ---
+    // If the user is an 'admin', grant access immediately
+    if (userRole === 'admin') {
+      return next();
     }
+    // --- END NEW ADMIN RULE ---
+
+    // If not an admin, check if their role is in the allowed list
+    if (!allowedRoles.includes(userRole)) {
+      return res.status(403).json({ message: 'Forbidden: You do not have permission for this action.' });
+    }
+
+    next();
   };
+}
+
+module.exports = {
+  authenticateToken,
+  authorize
 };
-
-
-module.exports = { authenticateToken, authorize };

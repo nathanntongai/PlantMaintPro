@@ -1,21 +1,18 @@
+// frontend/src/api.js
+// --- (UPDATED to be environment-aware) ---
+
 import axios from 'axios';
 
-const api = axios.create({
-  // Make sure this is the correct public URL for your BACKEND from the "Ports" tab
-  baseURL: 'https://plantmaint-backend.onrender.com', 
-});
+// Vite exposes your .env variables on 'import.meta.env'
+const baseURL = import.meta.env.VITE_API_BASE_URL;
 
-api.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      config.headers['Authorization'] = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
-  }
-);
+// A small check to make sure the variable is set
+if (!baseURL) {
+  console.error("VITE_API_BASE_URL is not set! Check your .env files.");
+}
+
+const api = axios.create({
+  baseURL: baseURL,
+});
 
 export default api;

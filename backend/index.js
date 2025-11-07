@@ -1,7 +1,8 @@
 // backend/index.js (v2.2.2 - Fixed typos)
 
+require('dotenv').config();
 const express = require('express');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('./db');
 const cors = require('cors');
@@ -896,30 +897,91 @@ app.post('/whatsapp', async (req, res) => {
 
 // (POST /register is 100% UNCHANGED from last file)
 app.post('/register', async (req, res) => { 
+    // --- NEW DEBUG LOGGING ---
+    console.log('\n--- REGISTER ATTEMPT ---');
     try { 
         const { companyName, userName, email, password, phoneNumber } = req.body; 
-        
+        console.log(`[DEBUG] 1. Registering new company: ${companyName}, User: ${email}`);
+
         if (!isPasswordStrong(password)) {
+            console.log(`[DEBUG] 2. Password is not strong.`);
             return res.status(400).json({ message: WEAK_PASSWORD_MESSAGE });
         }
 
+        console.log(`[DEBUG] 2. Hashing password with bcryptjs...`);
         const passwordHash = await bcrypt.hash(password, 10); 
+        console.log(`[DEBUG] 3. Hash created: ${passwordHash.substring(0, 10)}...`);
+
         const companyResult = await db.query('INSERT INTO companies (name) VALUES ($1) RETURNING id', [companyName]); 
         const newCompanyId = companyResult.rows[0].id; 
+        console.log(`[DEBUG] 4. Company created with ID: ${newCompanyId}`);
+
         const formattedPhoneNumber = phoneNumber ? `whatsapp:+${phoneNumber.replace(/[^0-9]/g, '')}` : null; 
+
         const userResult = await db.query(`INSERT INTO users (company_id, name, email, password_hash, role, phone_number) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role`, [newCompanyId, userName, email, passwordHash, 'Maintenance Manager', formattedPhoneNumber]); 
+
+        console.log(`[DEBUG] 5. User created with ID: ${userResult.rows[0].id}`);
         res.status(201).json({ message: 'Registration successful!', user: userResult.rows[0] }); 
+
     } catch (error) { 
         if (error.code === '23505') { 
+            console.log(`[DEBUG] ERROR: Email or phone already in use.`);
             return res.status(400).json({ message: 'Error: Email or phone number already in use.' }); 
         } 
         console.error('Registration error:', error); 
         res.status(500).json({ message: 'Internal server error' }); 
     } 
+    console.log('--- END REGISTER ATTEMPT ---');
+    // --- END DEBUG LOGGING ---
 });
 
 // (POST /login is 100% UNCHANGED)
-app.post('/login', async (req, res) => { try { const { email, password } = req.body; const query = `SELECT u.*, c.name as company_name FROM users u JOIN companies c ON u.company_id = c.id WHERE u.email = $1`; const result = await db.query(query, [email]); const user = result.rows[0]; const passwordMatches = user ? await bcrypt.compare(password, user.password_hash) : false; if (!passwordMatches) { return res.status(401).json({ message: 'Invalid credentials' }); } const token = jwt.sign({ userId: user.id, role: user.role, companyId: user.company_id }, process.env.JWT_SECRET, { expiresIn: '8h' }); delete user.password_hash; res.json({ message: 'Login successful!', token: token, user: user }); } catch (error) { console.error('Login error:', error); res.status(500).json({ message: 'Internal server error' }); } });
+app.post('/login', async (req, res) => { 
+    // --- NEW DEBUG LOGGING ---
+    console.log('\n--- LOGIN ATTEMPT ---');
+    try { 
+        const { email, password } = req.body; 
+        console.log(`[DEBUG] 1. Received login attempt for email: ${email}`);
+
+        const query = `SELECT u.*, c.name as company_name 
+                       FROM users u 
+                       LEFT JOIN companies c ON u.company_id = c.id 
+                       WHERE u.email = $1`; 
+
+        const result = await db.query(query, [email]); 
+        const user = result.rows[0]; 
+
+        if (!user) {
+          console.log('[DEBUG] 2. User not found in database.');
+          return res.status(401).json({ message: 'Invalid credentials' });
+        }
+
+        console.log(`[DEBUG] 2. Found user: ${user.name} (ID: ${user.id})`);
+        console.log(`[DEBUG] 3. Comparing password hash...`);
+
+        // This is the password check
+        const passwordMatches = await bcrypt.compare(password, user.password_hash);
+
+        // This is the most important log. What did it return?
+        console.log(`[DEBUG] 4. bcrypt.compare returned: ${passwordMatches}`); 
+
+        if (!passwordMatches) { 
+          console.log('[DEBUG] 5. Password does not match. Sending 401.');
+          return res.status(401).json({ message: 'Invalid credentials' }); 
+        } 
+
+        console.log('[DEBUG] 5. Password matches. Creating token.');
+        const token = jwt.sign({ userId: user.id, role: user.role, companyId: user.company_id }, process.env.JWT_SECRET, { expiresIn: '8h' }); 
+        delete user.password_hash; 
+        res.json({ message: 'Login successful!', token: token, user: user }); 
+
+    } catch (error) { 
+        console.error('Login error:', error); 
+        res.status(500).json({ message: 'Internal server error' }); 
+    } 
+    console.log('--- END LOGIN ATTEMPT ---');
+    // --- END DEBUG LOGGING ---
+});
 
 // --- NEW: Password Reset Endpoints ---
 app.post('/forgot-password', async (req, res) => {
@@ -997,9 +1059,25 @@ app.post('/reset-password', async (req, res) => {
 const ALL_ROLES = ['Maintenance Manager', 'Supervisor', 'Maintenance Technician', 'Operator'];
 const MANAGER_AND_SUPERVISOR = ['Maintenance Manager', 'Supervisor'];
 const MANAGER_ONLY = ['Maintenance Manager'];
+const ADMIN_ONLY = ['admin']; // For our new Super Admin role
 
 // User Management
 // (GET /users is 100% UNCHANGED)
+// --- NEW: Admin-Only Company Management ---
+// This route gets ALL companies, for the admin portal
+app.get('/admin/companies', authenticateToken, authorize(ADMIN_ONLY), async (req, res) => {
+  try {
+    // No companyId filter, we want all of them
+    const result = await db.query(
+      'SELECT id, name, status, created_at FROM companies ORDER BY name ASC'
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching all companies for admin:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+// --- END NEW Admin-Only ---
 app.get('/users', authenticateToken, authorize(MANAGER_AND_SUPERVISOR), async (req, res) => { try { const { companyId } = req.user; const result = await db.query('SELECT id, name, email, role, phone_number FROM users WHERE company_id = $1 ORDER BY name ASC', [companyId]); res.json(result.rows); } catch (error) { console.error('Error fetching users:', error); res.status(500).json({ message: 'Internal server error' }); } });
 
 // (POST /users is 100% UNCHANGED from last file)

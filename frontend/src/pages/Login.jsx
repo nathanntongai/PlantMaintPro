@@ -1,47 +1,62 @@
-// src/pages/Login.jsx
-import React, { useState, useEffect } from 'react';
-import { Link, useLocation } from 'react-router-dom';
-import api from '../api';
+// frontend/src/pages/Login.jsx
+// --- (This is the complete, correct file) ---
+
+import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { Container, Paper, Typography, TextField, Button, Box, Alert } from '@mui/material';
+import { useNavigate, Link as RouterLink } from 'react-router-dom';
+import {
+  Container, Box, Typography, TextField, Button,
+  Alert, CircularProgress, Paper, Avatar
+} from '@mui/material';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import './Login.css';
 
 function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const [successMessage, setSuccessMessage] = useState('');
+  
+  // --- THIS LINE FIXES THE ERROR ---
+  const [loading, setLoading] = useState(false); 
+  // --- END FIX ---
+
   const { login } = useAuth();
-  const location = useLocation();
+  const navigate = useNavigate(); // We keep this for the 'Forgot Password' link
 
-  useEffect(() => {
-    if (location.state?.message) {
-      setSuccessMessage(location.state.message);
-      // Clear the message from location state so it doesn't reappear
-      window.history.replaceState({}, document.title)
-    }
-  }, [location.state]);
-
-  const handleSubmit = async (event) => {
-    event.preventDefault();
+  const handleSubmit = async (e) => {
+    e.preventDefault();
     setError('');
+    setLoading(true); // This line will now work
     try {
-      const response = await api.post('/login', { email, password });
-      // Pass both the token and the user object to the login function
-      login(response.data.token, response.data.user);
+      await login(email, password);
+      // We no longer call navigate('/') here.
+      // App.jsx will handle the redirect.
     } catch (err) {
-      setError(err.response?.data?.message || 'Login failed.');
+      setError(err.message || 'Failed to login');
+    } finally {
+      setLoading(false); 
     }
   };
 
   return (
-    <Container component="main" maxWidth="xs" sx={{ mt: 8 }}>
-      <Paper elevation={3} sx={{ p: 4, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+    <Container component="main" maxWidth="xs" className="login-container">
+      <Paper elevation={6} sx={{
+        marginTop: 8,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        padding: 4,
+        backgroundColor: 'rgba(255, 255, 255, 0.95)',
+        borderRadius: '16px',
+        boxShadow: '0 8px 32px 0 rgba(31, 38, 135, 0.37)'
+      }}>
+        <Avatar sx={{ m: 1, bgcolor: 'secondary.main' }}>
+          <LockOutlinedIcon />
+        </Avatar>
         <Typography component="h1" variant="h5">
-          PlantMaint Pro Login
+          Sign In
         </Typography>
-        {error && <Alert severity="error" sx={{ mt: 2, width: '100%' }}>{error}</Alert>}
-        {successMessage && <Alert severity="success" sx={{ mt: 2, width: '100%' }}>{successMessage}</Alert>}
-        <Box component="form" onSubmit={handleSubmit} sx={{ mt: 1 }}>
+        <Box component="form" onSubmit={handleSubmit} noValidate sx={{ mt: 1 }}>
           <TextField
             margin="normal"
             required
@@ -66,26 +81,35 @@ function Login() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
+          
+          {error && (
+            <Alert severity="error" sx={{ width: '100%', mt: 2 }}>
+              {error}
+            </Alert>
+          )}
+
           <Button
             type="submit"
             fullWidth
             variant="contained"
             sx={{ mt: 3, mb: 2 }}
+            disabled={loading}
           >
-            Login
+            {loading ? <CircularProgress size={24} /> : 'Sign In'}
           </Button>
-
-          {/* --- UPDATED LINKS --- */}
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-            <Link to="/forgot-password" variant="body2">
-              Forgot password?
-            </Link>
-            <Link to="/register" variant="body2">
-              {"Don't have an account? Sign Up"}
-            </Link>
-          </Box>
-          {/* --- END UPDATED LINKS --- */}
           
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+            <RouterLink to="/forgot-password" style={{ textDecoration: 'none' }}>
+              <Typography variant="body2">
+                Forgot password?
+              </Typography>
+            </RouterLink>
+            <RouterLink to="/register" style={{ textDecoration: 'none' }}>
+              <Typography variant="body2">
+                {"Don't have an account? Sign Up"}
+              </Typography>
+            </RouterLink>
+          </Box>
         </Box>
       </Paper>
     </Container>

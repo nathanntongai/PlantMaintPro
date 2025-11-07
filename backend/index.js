@@ -1183,6 +1183,70 @@ app.get('/admin/users', authenticateToken, authorize(ADMIN_ONLY), async (req, re
 });
 // --- END NEW Admin-only route ---
 
+// --- NEW: Admin-only route to UPDATE a user's details ---
+app.patch('/admin/users/:id/details', authenticateToken, authorize(ADMIN_ONLY), async (req, res) => {
+  const { id } = req.params;
+  const { name, email, role } = req.body;
+
+  try {
+    const result = await db.query(
+      `UPDATE users SET name = $1, email = $2, role = $3 
+       WHERE id = $4 
+       RETURNING id, name, email, role, phone_number, company_id`,
+      [name, email, role, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    // We need to get the company name to send back the full user object
+    const user = result.rows[0];
+    let companyName = null;
+    if (user.company_id) {
+        const companyRes = await db.query('SELECT name FROM companies WHERE id = $1', [user.company_id]);
+        if (companyRes.rows.length > 0) {
+            companyName = companyRes.rows[0].name;
+        }
+    }
+
+    res.json({ message: 'User details updated!', user: { ...user, company_name: companyName } });
+
+  } catch (error) {
+    if (error.code === '23505') {
+      return res.status(400).json({ message: 'Error: Email already in use.' });
+    }
+    console.error('Error updating user details:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// --- NEW: Admin-only route to RESET a user's password ---
+app.patch('/admin/users/:id/password', authenticateToken, authorize(ADMIN_ONLY), async (req, res) => {
+  const { id } = req.params;
+  const { newPassword } = req.body;
+
+  if (!isPasswordStrong(newPassword)) {
+    return res.status(400).json({ message: WEAK_PASSWORD_MESSAGE });
+  }
+
+  try {
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+
+    await db.query(
+      'UPDATE users SET password_hash = $1 WHERE id = $2',
+      [passwordHash, id]
+    );
+
+    res.json({ message: 'Password reset successfully!' });
+
+  } catch (error) {
+    console.error('Error resetting password:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+// --- END NEW Admin-only routes ---
+
 // --- NEW: Admin-only route to DELETE a company and all its data ---
 app.delete('/admin/companies/:id', authenticateToken, authorize(ADMIN_ONLY), async (req, res) => {
   const { id } = req.params;
@@ -1269,6 +1333,52 @@ app.get('/admin/metrics', authenticateToken, authorize(ADMIN_ONLY), async (req, 
   }
 });
 // --- END NEW Admin-only route ---
+
+// --- NEW: Admin-only route for New Signups chart ---
+app.get('/admin/charts/signups', authenticateToken, authorize(ADMIN_ONLY), async (req, res) => {
+  try {
+    // This query groups new users by the week they were created
+    const query = `
+      SELECT 
+        DATE_TRUNC('week', created_at) AS week,
+        COUNT(*) AS signups
+      FROM users
+      WHERE role != 'admin' AND created_at >= NOW() - INTERVAL '3 months'
+      GROUP BY week
+      ORDER BY week;
+    `;
+    const result = await db.query(query);
+    res.json(result.rows); // Sends back an array like [{ week, signups }, ...]
+
+  } catch (error)
+   {
+    console.error('Error fetching signups chart data:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// --- NEW: Admin-only route for Breakdowns chart ---
+app.get('/admin/charts/breakdowns', authenticateToken, authorize(ADMIN_ONLY), async (req, res) => {
+  try {
+    // This query groups breakdowns by the day they were reported
+    const query = `
+      SELECT
+        DATE_TRUNC('day', reported_at) AS day,
+        COUNT(*) AS breakdowns
+      FROM breakdowns
+      WHERE reported_at >= NOW() - INTERVAL '30 days'
+      GROUP BY day
+      ORDER BY day;
+    `;
+    const result = await db.query(query);
+    res.json(result.rows); // Sends back an array like [{ day, breakdowns }, ...]
+
+  } catch (error) {
+    console.error('Error fetching breakdowns chart data:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+// --- END NEW Admin-only routes ---
 
 // --- NEW: Admin-only route to download an Excel summary report ---
 app.get('/admin/reports/summary', authenticateToken, authorize(ADMIN_ONLY), async (req, res) => {

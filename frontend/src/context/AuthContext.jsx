@@ -53,12 +53,22 @@ export const AuthProvider = ({ children }) => {
   const login = async (email, password) => {
     try {
       const { data } = await api.post('/login', { email, password });
-      setToken(data.token);
-      setUser(data.user);
-      // --- NEW: Save the role ---
-      setUserRole(data.user.role); 
-      return data;
+
+      // --- NEW, SAFER CODE ---
+      if (data.token && data.user) {
+        setToken(data.token);
+        setUser(data.user);
+        setUserRole(data.user.role); // This is now safe
+        return data;
+      } else {
+        // This will happen if the backend sends a 200 OK 
+        // but is missing the 'user' or 'token' object.
+        throw new Error('Login response was missing user data.');
+      }
+      // --- END NEW CODE ---
+
     } catch (error) {
+      // This catch block is unchanged
       console.error('Login failed', error.response?.data || error.message);
       throw error.response?.data || new Error('Login failed');
     }
